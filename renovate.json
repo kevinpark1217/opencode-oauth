@@ -1,0 +1,12 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "packageRules": [
+    {
+      "description": "OpenCode hands plugins its own effect and runs them on its own Bun: bump these together, by hand (README, Development).",
+      "matchPackageNames": ["@opencode/plugin", "effect", "@types/bun", "bun"],
+      "groupName": "OpenCode host",
+      "dependencyDashboardApproval": true
+    }
+  ]
+}
