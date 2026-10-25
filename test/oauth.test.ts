@@ -20,7 +20,7 @@ function tokenEndpoint(responses: Array<Response | { status: number; body: unkno
   return { url: `http://127.0.0.1:${server.port}/token`, forms, [Symbol.dispose]: () => server.stop(true) }
 }
 
-const optionsFor =(tokenURL: string): Options => ({
+const optionsFor = (tokenURL: string): Options => ({
   provider: "example",
   clientID: "opencode",
   authorizationEndpoint: "https://auth.example/authorize",

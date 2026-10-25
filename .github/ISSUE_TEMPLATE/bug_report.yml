@@ -1,0 +1,58 @@
+name: Bug report
+description: Something doesn't work as the README describes
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Never paste access tokens, refresh tokens, authorization codes or client secrets. Report a security problem privately instead (Security tab, "Report a vulnerability").
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you saw, and what you expected instead. Quote error messages exactly.
+      placeholder: |
+        Ran `opencode auth login my-llm` and signed in; the browser tab said "token endpoint answered 400 (invalid_grant)".
+        Expected the sign-in to finish.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: plugin-entry
+    attributes:
+      label: Plugin entry
+      description: The plugin's entry from your OpenCode config. Change host names if you like, but keep the shape.
+      render: jsonc
+    validations:
+      required: true
+  - type: input
+    id: identity-provider
+    attributes:
+      label: Identity provider
+      description: The authorization server and its version.
+      placeholder: Authelia 4.39, Keycloak 26.4, ...
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: opencode-oauth, OpenCode (`opencode --version`), and your operating system.
+      placeholder: opencode-oauth 0.1.0, OpenCode 2.1.4, macOS 26.1
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Lines about the plugin from OpenCode's log, `opencode.log` in the folder `opencode debug paths` prints, such as `loading plugin` or `failed to load plugin`. Remove anything secret.
+      render: text
