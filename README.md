@@ -75,14 +75,11 @@ method with the sign-in.
 
 ### Updates
 
-`@latest` follows each release. OpenCode checks for a newer one when it starts
-and once a day, and marks the plugin "update available" in `/plugins` and in
-`opencode plugin check`. Update it there (`ctrl+u`) or with
-`opencode plugin update`. A release can require a newer OpenCode, so if the
-plugin fails to load after an update, update OpenCode too.
+OpenCode checks for a new version daily and shows "update available" in
+`/plugins`. Press `ctrl+u` there, or run `opencode plugin update`. If the plugin
+then fails to load, update OpenCode too.
 
-To choose each update yourself, pin a version instead, such as
-`opencode-oauth@0.1.1`: OpenCode never checks or updates a pinned version.
+Pinning a version (`opencode-oauth@<version>`) turns update checks off.
 
 ### Options
 
