@@ -157,8 +157,11 @@ and `@types/bun` to the Bun that OpenCode release uses.
 Commits follow [Conventional Commits](https://www.conventionalcommits.org).
 [release-please](https://github.com/googleapis/release-please) turns them into a
 release pull request; merging it tags the release and stages it on npm through
-trusted publishing, with provenance. The version goes live once a maintainer
-approves it on npmjs.com or with `npm stage approve`, which asks for 2FA.
+trusted publishing, with provenance. The version can't be installed until a
+maintainer approves it on npmjs.com, or with `npm stage approve <stage-id>`,
+which asks for 2FA; the publish job prints the stage ID, and
+`npm stage list opencode-oauth` shows it too. A rejected version can't be
+staged again under the same number: release a new one.
 
 ## License
 
