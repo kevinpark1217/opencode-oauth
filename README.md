@@ -15,9 +15,11 @@ bearer. Nothing in the plugin is specific to one identity provider.
 
 - **OpenCode 2.** The plugin uses the v2 plugin API (`@opencode/plugin` 2.0.32 or
   later); OpenCode 1.x does not load it.
-- **An authorization server** (identity provider) with a client that:
-  - is public (no client secret) and may use the authorization code grant with
-    PKCE (`S256`) and the refresh token grant;
+- **An authorization server** (identity provider) that your browser and OpenCode
+  can both reach. It need not be on the internet: a LAN or a VPN is enough, since
+  the server never connects to your machine. It needs a client that:
+  - is public, in OAuth's sense of having no client secret, and may use the
+    authorization code grant with PKCE (`S256`) and the refresh token grant;
   - allows the redirect URI `http://127.0.0.1:<port>/callback`. A server that
     follows RFC 8252 section 7.3 accepts a loopback redirect on any port, so
     `port` can stay unset; otherwise register a fixed port and set `port` to it;
