@@ -92,7 +92,7 @@ Pinning a version (`opencode-oauth@<version>`) turns update checks off.
 | `provider` | yes | The key of the provider in `providers` that the plugin signs in to. |
 | `clientID` | yes | The client ID registered with the authorization server. |
 | `issuer` | yes, or both endpoints | The authorization server's issuer, such as `https://auth.example.com/realms/example`. The plugin reads the endpoints from the server's metadata (OpenID Connect Discovery or RFC 8414). |
-| `authorizationEndpoint`, `tokenEndpoint` | instead of `issuer` | The endpoints themselves, for a server that publishes no metadata. |
+| `authorizationEndpoint`, `tokenEndpoint` | instead of `issuer` | The endpoints themselves, for a server that publishes no metadata, or whose metadata names a different issuer. |
 | `scope` | yes | The scopes to request, space-separated. Include what gets you a refresh token. |
 | `port` | no | The loopback redirect's port. Unset or `0` lets the OS pick one. |
 | `authorizationParams` | no | Extra parameters for the authorization request, such as `{ "audience": "https://llm.example.com" }` for a server that picks the access token's audience from one. It cannot replace the parameters the grant sets itself. |
@@ -146,8 +146,8 @@ The SearXNG instance must allow JSON output (`json` in `search.formats` in its
 - Concurrent renewals of one refresh token share a single request, so a server
   that revokes a reused rotated refresh token does not sign you out.
 - Error messages carry an HTTP status and, only when it is short plain text, the
-  server's OAuth error code, error description or refused token type; never a
-  response body.
+  server's OAuth error code, error description, refused token type or metadata
+  issuer; never a response body.
 
 Report vulnerabilities privately, as [SECURITY.md](SECURITY.md) describes.
 

@@ -41,6 +41,26 @@ describe("plugin", () => {
     expect(removals).toEqual([["example", { type: "key" }]])
   })
 
+  test("keeps one registration when OpenCode reruns the transform", async () => {
+    const updates: IntegrationMethodRegistration[] = []
+    const editor = {
+      method: { update: (input: IntegrationMethodRegistration) => updates.push(input), remove: () => undefined },
+    } as unknown as IntegrationEditor
+    const ctx = {
+      options,
+      integration: {
+        transform: (callback: (editor: IntegrationEditor) => void) => {
+          callback(editor)
+          callback(editor)
+          return Effect.succeed({ dispose: Effect.void })
+        },
+      },
+    }
+    await Effect.runPromise(Effect.scoped(plugin.effect(ctx as unknown as Context)))
+    expect(updates).toHaveLength(2)
+    expect(updates[1]).toBe(updates[0])
+  })
+
   test("does not load with invalid options, and says why", async () => {
     const ctx = { options: { ...options, tokenEndpoint: "http://auth.example/token" } }
     const exit = await Effect.runPromiseExit(Effect.scoped(plugin.effect(ctx as unknown as Context)))

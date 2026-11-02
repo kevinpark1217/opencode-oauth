@@ -435,6 +435,7 @@ describe("refresh", () => {
 function authServer(
   input: {
     at?: "openid-configuration" | "oauth-authorization-server"
+    path?: string
     metadata?: (issuer: string) => Record<string, unknown>
     failFirst?: number
     tokens?: Array<{ status: number; body: unknown }>
@@ -455,20 +456,26 @@ function authServer(
         const next = tokens.shift() ?? { status: 500, body: {} }
         return Response.json(next.body, { status: next.status })
       }
-      if (path !== `/.well-known/${input.at ?? "openid-configuration"}`) return new Response(null, { status: 404 })
+      const base = (input.path ?? "").replace(/\/$/, "")
+      const published =
+        input.at === "oauth-authorization-server"
+          ? `/.well-known/oauth-authorization-server${base}`
+          : `${base}/.well-known/openid-configuration`
+      if (path !== published) return new Response(null, { status: 404 })
       if (failures-- > 0) return new Response(null, { status: 503 })
       return Response.json({
         issuer,
-        authorization_endpoint: `${issuer}/authorize`,
-        token_endpoint: `${issuer}/token`,
+        authorization_endpoint: `${origin}/authorize`,
+        token_endpoint: `${origin}/token`,
         code_challenge_methods_supported: ["S256"],
         ...input.metadata?.(issuer),
       })
     },
   })
-  const issuer: string = `http://127.0.0.1:${server.port}`
+  const origin = `http://127.0.0.1:${server.port}`
+  const issuer: string = `${origin}${input.path ?? ""}`
   const options: Options = { provider: "example", clientID: "opencode", issuer, scope: "openid offline_access" }
-  return { issuer, options, paths, forms, [Symbol.dispose]: () => server.stop(true) }
+  return { origin, issuer, options, paths, forms, [Symbol.dispose]: () => server.stop(true) }
 }
 
 const bearer = { status: 200, body: { access_token: "access", refresh_token: "refresh", expires_in: 900, token_type: "Bearer" } }
@@ -483,18 +490,22 @@ const failure = (effect: Effect.Effect<unknown, unknown, never>) =>
 
 describe("discovery", () => {
   test("signs in with the endpoints from the issuer's OpenID Connect metadata", async () => {
-    using auth = authServer({ tokens: [bearer] })
+    using auth = authServer({ path: "/application/o/app/", tokens: [bearer] })
     const { url, credential } = await Effect.runPromise(signIn(auth.options, callback()))
-    expect(`${url.origin}${url.pathname}`).toBe(`${auth.issuer}/authorize`)
+    expect(`${url.origin}${url.pathname}`).toBe(`${auth.origin}/authorize`)
     expect(auth.forms[0]).toMatchObject({ grant_type: "authorization_code", code: "the-code" })
     expect(credential.access).toBe("access")
-    expect(auth.paths).toEqual(["/.well-known/openid-configuration", "/token"])
+    expect(auth.paths).toEqual(["/application/o/app/.well-known/openid-configuration", "/token"])
   })
 
-  test("falls back to the RFC 8414 location", async () => {
-    using auth = authServer({ at: "oauth-authorization-server", tokens: [bearer] })
+  test("falls back to the RFC 8414 location, inserted before the issuer's path", async () => {
+    using auth = authServer({ at: "oauth-authorization-server", path: "/realms/a", tokens: [bearer] })
     await Effect.runPromise(signIn(auth.options, callback()))
-    expect(auth.paths).toEqual(["/.well-known/openid-configuration", "/.well-known/oauth-authorization-server", "/token"])
+    expect(auth.paths).toEqual([
+      "/realms/a/.well-known/openid-configuration",
+      "/.well-known/oauth-authorization-server/realms/a",
+      "/token",
+    ])
   })
 
   test("refuses metadata for another issuer, with insecure endpoints, or without S256", async () => {
@@ -514,6 +525,9 @@ describe("discovery", () => {
   test("checks the issuer in the authorization response (RFC 9207)", async () => {
     using strict = authServer({ metadata: () => ({ authorization_response_iss_parameter_supported: true }), tokens: [bearer] })
     expect(await failure(signIn(strict.options, callback()))).toBe("Authorization response has no issuer")
+    const denied = (url: URL) =>
+      fetch(`${redirectOf(url)}?${new URLSearchParams({ error: "access_denied", state: url.searchParams.get("state") ?? "" })}`)
+    expect(await failure(signIn(strict.options, denied))).toBe("Authorization response has no issuer")
     expect(await failure(signIn(strict.options, callback({ iss: "https://evil.example" })))).toBe(
       "Authorization response came from another issuer",
     )
@@ -526,12 +540,13 @@ describe("discovery", () => {
     expect((await Effect.runPromise(signIn(lenient.options, callback()))).credential.access).toBe("access")
   })
 
-  test("keeps valid metadata for later sign-ins and refreshes, and retries after a failure", async () => {
-    using auth = authServer({ failFirst: 1, tokens: [bearer, { ...bearer, body: { ...bearer.body, access_token: "renewed" } }] })
+  test("shares and keeps valid metadata for sign-ins and refreshes, and retries after a failure", async () => {
+    using auth = authServer({ failFirst: 1, tokens: [bearer] })
     const method = registration(auth.options)
     expect(await failure(Effect.scoped(method.authorize({})))).toContain("answered 503")
-    const url = await Effect.runPromise(Effect.scoped(Effect.map(method.authorize({}), (a) => new URL(a.url))))
-    expect(`${url.origin}${url.pathname}`).toBe(`${auth.issuer}/authorize`)
+    const authorizeURL = () => Effect.runPromise(Effect.scoped(Effect.map(method.authorize({}), (a) => new URL(a.url))))
+    const [url] = await Promise.all([authorizeURL(), authorizeURL()])
+    expect(`${url.origin}${url.pathname}`).toBe(`${auth.origin}/authorize`)
     const renewed = await Effect.runPromise(method.refresh?.(credentialWith(`refresh-${crypto.randomUUID()}`)) ?? Effect.die("no refresh"))
     expect(renewed.access).toBe("access")
     expect(auth.paths.filter((path) => path.startsWith("/.well-known/"))).toEqual([

@@ -136,9 +136,10 @@ interface Server {
   readonly authorizationEndpoint: string
   readonly tokenEndpoint: string
   // Known only from discovery; then authorization responses are checked against it.
-  readonly issuer?: string
-  readonly issInResponse: boolean
+  readonly issuer?: { readonly id: string; readonly inResponse: boolean }
 }
+
+const discoveryTimeoutMs = 10_000
 
 // OpenID Connect Discovery appends the well-known path to the issuer; RFC 8414
 // inserts it between the host and the issuer's path.
@@ -152,11 +153,12 @@ function discover(issuer: string) {
   return Effect.gen(function* () {
     const found = yield* Effect.tryPromise({
       try: async (signal) => {
+        const deadline = AbortSignal.any([signal, AbortSignal.timeout(discoveryTimeoutMs)])
         for (const location of metadataLocations(issuer)) {
           const response = await fetch(location, {
             headers: { Accept: "application/json" },
             redirect: "error",
-            signal: AbortSignal.any([signal, AbortSignal.timeout(tokenRequestTimeoutMs)]),
+            signal: deadline,
           })
           if (response.status === 404) continue
           if (!response.ok) throw new Error(`authorization server metadata at ${location} answered ${response.status}`)
@@ -166,10 +168,8 @@ function discover(issuer: string) {
       },
       catch: (cause) =>
         cause instanceof Error && cause.name === "TimeoutError"
-          ? new Error(`authorization server metadata for ${issuer} did not answer within ${tokenRequestTimeoutMs / 1000} s`)
-          : cause instanceof TypeError
-            ? new Error(`could not fetch authorization server metadata for ${issuer}`)
-            : asError(cause),
+          ? new Error(`authorization server metadata for ${issuer} did not answer within ${discoveryTimeoutMs / 1000} s`)
+          : asError(cause),
     })
     const metadata = yield* Schema.decodeUnknownEffect(Metadata)(found.body).pipe(
       Effect.mapError((error) => {
@@ -199,8 +199,7 @@ function discover(issuer: string) {
     return {
       authorizationEndpoint: metadata.authorization_endpoint,
       tokenEndpoint: metadata.token_endpoint,
-      issuer,
-      issInResponse: metadata.authorization_response_iss_parameter_supported === true,
+      issuer: { id: issuer, inResponse: metadata.authorization_response_iss_parameter_supported === true },
     } satisfies Server
   })
 }
@@ -213,7 +212,7 @@ function serverFor(options: Options): () => Effect.Effect<Server, Error> {
     if (authorizationEndpoint === undefined || tokenEndpoint === undefined) {
       return () => Effect.fail(new Error("set issuer, or both authorizationEndpoint and tokenEndpoint"))
     }
-    const server: Server = { authorizationEndpoint, tokenEndpoint, issInResponse: false }
+    const server: Server = { authorizationEndpoint, tokenEndpoint }
     return () => Effect.succeed(server)
   }
   let pending: Promise<Server> | undefined
@@ -352,7 +351,8 @@ function authorize(options: Options, authServer: Server): Effect.Effect<Integrat
       // Mix-up defense (RFC 9207 section 2.4): a response naming another issuer
       // is refused, and so is one without an issuer from a server that sends it.
       const iss = url.searchParams.get("iss")
-      if (authServer.issuer !== undefined && (iss === null ? authServer.issInResponse : iss !== authServer.issuer)) {
+      const expected = authServer.issuer
+      if (expected !== undefined && (iss === null ? expected.inResponse : iss !== expected.id)) {
         const message = iss === null ? "Authorization response has no issuer" : "Authorization response came from another issuer"
         reply(response, 400, message)
         Effect.runFork(Deferred.fail(received, new Error(message)))

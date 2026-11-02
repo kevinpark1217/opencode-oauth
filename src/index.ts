@@ -10,8 +10,11 @@ export default Plugin.define({
   effect: (ctx) =>
     Effect.gen(function* () {
       const options = yield* Effect.sync(() => parseOptions(ctx.options))
+      // OpenCode reruns transforms whenever its registry is rebuilt; one
+      // registration keeps the discovered metadata across those reruns.
+      const method = registration(options)
       yield* ctx.integration.transform((editor) => {
-        editor.method.update(registration(options))
+        editor.method.update(method)
         editor.method.remove(options.provider, { type: "key" })
       })
       const searchURL = options.searchURL
