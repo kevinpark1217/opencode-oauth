@@ -148,6 +148,9 @@ Report vulnerabilities privately, as [SECURITY.md](SECURITY.md) describes.
 
 ## Development
 
+Rules for contributors, people and coding agents alike, are in
+[AGENTS.md](AGENTS.md).
+
 ```sh
 bun install
 bun run typecheck

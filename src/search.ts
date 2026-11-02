@@ -1,4 +1,3 @@
-// Web search through a SearXNG that accepts the provider's access token.
 import { Effect, Schema } from "effect"
 
 const SearxngResponse = Schema.Struct({ results: Schema.Array(Schema.Unknown) })
@@ -26,8 +25,6 @@ export interface SearchResult {
 const maxResults = 8
 const searchTimeoutMs = 25_000
 
-// The query and the token cross to `searchURL` only: no redirect is followed.
-// Errors carry the HTTP status, never a body.
 export function search(searchURL: string, query: string, accessToken: string) {
   return Effect.tryPromise({
     try: async (signal) => {

@@ -1,6 +1,3 @@
-// OpenCode signs in to one model provider over OAuth 2.0, stores the credential,
-// and sends its access token as the provider's bearer. With `searchURL`, web
-// search goes through a SearXNG with the same token.
 import { Plugin } from "@opencode/plugin/effect"
 import { Effect } from "effect"
 import { parseOptions, registration } from "./oauth.js"
@@ -15,7 +12,6 @@ export default Plugin.define({
       const options = yield* Effect.sync(() => parseOptions(ctx.options))
       yield* ctx.integration.transform((editor) => {
         editor.method.update(registration(options))
-        // The provider takes these tokens, not an API key.
         editor.method.remove(options.provider, { type: "key" })
       })
       const searchURL = options.searchURL
