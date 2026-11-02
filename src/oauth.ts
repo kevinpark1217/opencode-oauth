@@ -26,11 +26,14 @@ const OptionsSchema = Schema.Struct({
 })
 export type Options = typeof OptionsSchema.Type
 
+// The token endpoint's success response (RFC 6749 section 5.1), with what this
+// client needs of it: token_type is required there; expires_in is only
+// recommended, but OpenCode renews by it.
 const TokenResponse = Schema.Struct({
   access_token: Schema.NonEmptyString,
-  refresh_token: Schema.optional(Schema.NonEmptyString),
+  token_type: Schema.String,
   expires_in: Schema.Finite.check(Schema.isGreaterThan(0)),
-  token_type: Schema.optional(Schema.String),
+  refresh_token: Schema.optional(Schema.NonEmptyString),
 })
 
 const methodID = Integration.MethodID.make("oauth")
@@ -84,39 +87,58 @@ const reply = (response: ServerResponse, status: number, text: string) =>
     })
     .end(text)
 
-// One token request. A refresh may omit refresh_token, which keeps the old one
-// (RFC 6749 section 6). Error messages carry the OAuth error code, never a body.
+// Error messages quote a server's error code or token type only when it is short
+// and fits the error code's grammar (RFC 6749 appendix A.7): printable ASCII
+// without `"` or `\`. Anything else in a response never reaches a message.
+const quotable = (value: unknown): value is string =>
+  typeof value === "string" && /^[\x20-\x21\x23-\x5B\x5D-\x7E]{1,64}$/.test(value)
+
+// Sends one token request (RFC 6749 section 3.2) and returns the response's JSON,
+// or fails with the HTTP status and the OAuth error code (section 5.2).
+function postTokenRequest(options: Options, grant: Record<string, string>) {
+  return Effect.tryPromise({
+    try: async (signal): Promise<unknown> => {
+      const response = await fetch(options.tokenEndpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+        body: new URLSearchParams({ ...grant, client_id: options.clientID }),
+        // The body carries a code or a refresh token: never follow it elsewhere.
+        redirect: "error",
+        signal: AbortSignal.any([signal, AbortSignal.timeout(tokenRequestTimeoutMs)]),
+      })
+      const json: unknown = await response.json().catch(() => undefined)
+      if (!response.ok) {
+        const code = (json as { error?: unknown } | undefined)?.error
+        throw new Error(`token endpoint answered ${response.status}${quotable(code) ? ` (${code})` : ""}`)
+      }
+      return json
+    },
+    catch: asError,
+  })
+}
+
+// Accepts a token response only for a token OpenCode can present. OpenCode and
+// the web search send it as a Bearer token (RFC 6750), and a client must not use
+// a token whose type it does not understand (RFC 6749 section 7.1), such as a
+// DPoP-bound one. Type names compare case-insensitively (section 5.1).
+function acceptTokenResponse(body: unknown) {
+  return Effect.gen(function* () {
+    const tokens = yield* Schema.decodeUnknownEffect(TokenResponse)(body).pipe(
+      Effect.mapError(() => new Error("token endpoint returned no usable access_token, token_type and expires_in")),
+    )
+    if (tokens.token_type.toLowerCase() !== "bearer") {
+      const type = quotable(tokens.token_type) ? `a ${tokens.token_type}` : "an unsupported"
+      return yield* Effect.fail(new Error(`token endpoint issued ${type} token; only Bearer tokens are supported`))
+    }
+    return tokens
+  })
+}
+
+// One grant at the token endpoint, as the credential OpenCode stores. A refresh
+// may omit refresh_token, which keeps the old one (RFC 6749 section 6).
 function requestToken(options: Options, grant: Record<string, string>, previousRefresh?: string) {
   return Effect.gen(function* () {
-    const body = yield* Effect.tryPromise({
-      try: async (signal) => {
-        const response = await fetch(options.tokenEndpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
-          body: new URLSearchParams({ ...grant, client_id: options.clientID }),
-          // The body carries a code or a refresh token: never follow it elsewhere.
-          redirect: "error",
-          signal: AbortSignal.any([signal, AbortSignal.timeout(tokenRequestTimeoutMs)]),
-        })
-        const json: unknown = await response.json().catch(() => undefined)
-        if (!response.ok) {
-          const code = (json as { error?: unknown } | undefined)?.error
-          throw new Error(`token endpoint answered ${response.status}${typeof code === "string" ? ` (${code})` : ""}`)
-        }
-        return json
-      },
-      catch: asError,
-    })
-    const tokens = yield* Schema.decodeUnknownEffect(TokenResponse)(body).pipe(
-      Effect.mapError(() => new Error("token endpoint returned no usable access token")),
-    )
-    // OpenCode sends the token as Bearer, and a client must not use a token type
-    // it does not understand (RFC 6749 section 7.1). Type names are compared
-    // case-insensitively (section 5.1); a response without one is taken as Bearer.
-    const type = tokens.token_type
-    if (type !== undefined && type.toLowerCase() !== "bearer") {
-      return yield* Effect.fail(new Error(`token endpoint issued a ${type} token; only Bearer tokens are supported`))
-    }
+    const tokens = yield* postTokenRequest(options, grant).pipe(Effect.flatMap(acceptTokenResponse))
     const refresh = tokens.refresh_token ?? previousRefresh
     if (refresh === undefined) {
       return yield* Effect.fail(

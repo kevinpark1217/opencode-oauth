@@ -23,10 +23,11 @@ bearer. Nothing in the plugin is specific to one identity provider.
   - allows the redirect URI `http://127.0.0.1:<port>/callback`. A server that
     follows RFC 8252 section 7.3 accepts a loopback redirect on any port, so
     `port` can stay unset; otherwise register a fixed port and set `port` to it;
-  - is issued refresh tokens, often by granting it the `offline_access` scope,
-    with token responses that include `expires_in`;
-  - is issued Bearer access tokens. A token response that names another
-    `token_type`, such as `DPoP`, is refused.
+  - is issued refresh tokens, often by granting it the `offline_access` scope;
+  - is issued Bearer access tokens: token responses must include `token_type`
+    `Bearer` (in any case) and `expires_in`. A token of another type, such as a
+    DPoP-bound one, is refused, because OpenCode sends the token as a Bearer
+    token.
 - **A provider that accepts the access token** as `Authorization: Bearer …`, such
   as an OpenAI-compatible server behind a gateway that validates the token (for
   example oauth2-proxy with `--skip-jwt-bearer-tokens`).

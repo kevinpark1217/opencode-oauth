@@ -118,7 +118,7 @@ describe("sign-in", () => {
   })
 
   test("adds authorizationParams to the authorization request", async () => {
-    using tokens = tokenEndpoint([{ status: 200, body: { access_token: "access", refresh_token: "r", expires_in: 900 } }])
+    using tokens = tokenEndpoint([{ status: 200, body: { access_token: "access", refresh_token: "r", expires_in: 900, token_type: "Bearer" } }])
     const options = { ...optionsFor(tokens.url), authorizationParams: { audience: "https://api.example" } }
     const { url } = await Effect.runPromise(
       signIn(options, (url) => fetch(`${redirectOf(url)}?code=the-code&state=${url.searchParams.get("state")}`)),
@@ -128,7 +128,7 @@ describe("sign-in", () => {
   })
 
   test("listens on a fixed port when one is set", async () => {
-    using tokens = tokenEndpoint([{ status: 200, body: { access_token: "access", refresh_token: "r", expires_in: 900 } }])
+    using tokens = tokenEndpoint([{ status: 200, body: { access_token: "access", refresh_token: "r", expires_in: 900, token_type: "Bearer" } }])
     const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() })
     const port = probe.port
     probe.stop(true)
@@ -141,7 +141,7 @@ describe("sign-in", () => {
   })
 
   test("refuses a callback with another state, and still finishes with the real one", async () => {
-    using tokens = tokenEndpoint([{ status: 200, body: { access_token: "access", refresh_token: "r", expires_in: 900 } }])
+    using tokens = tokenEndpoint([{ status: 200, body: { access_token: "access", refresh_token: "r", expires_in: 900, token_type: "Bearer" } }])
     const statuses: number[] = []
     const { credential } = await Effect.runPromise(
       signIn(optionsFor(tokens.url), async (url) => {
@@ -172,7 +172,7 @@ describe("sign-in", () => {
   })
 
   test("answers other paths with 404 and a second callback with 409", async () => {
-    using tokens = tokenEndpoint([{ status: 200, body: { access_token: "access", refresh_token: "r", expires_in: 900 } }])
+    using tokens = tokenEndpoint([{ status: 200, body: { access_token: "access", refresh_token: "r", expires_in: 900, token_type: "Bearer" } }])
     let other = 0
     let second: Promise<Response> | undefined
     const { page } = await Effect.runPromise(
@@ -189,7 +189,7 @@ describe("sign-in", () => {
   })
 
   test("fails when the server issues no refresh token", async () => {
-    using tokens = tokenEndpoint([{ status: 200, body: { access_token: "access", expires_in: 900 } }])
+    using tokens = tokenEndpoint([{ status: 200, body: { access_token: "access", expires_in: 900, token_type: "Bearer" } }])
     const error = await Effect.runPromise(
       Effect.flip(
         signIn(optionsFor(tokens.url), (url) =>
@@ -234,7 +234,7 @@ describe("sign-in", () => {
 
 describe("refresh", () => {
   test("keeps the refresh token when the server returns none", async () => {
-    using tokens = tokenEndpoint([{ status: 200, body: { access_token: "new-access", expires_in: 900 } }])
+    using tokens = tokenEndpoint([{ status: 200, body: { access_token: "new-access", expires_in: 900, token_type: "Bearer" } }])
     const refresh = `refresh-${crypto.randomUUID()}`
     const next = await Effect.runPromise(
       registration(optionsFor(tokens.url)).refresh?.(credentialWith(refresh)) ?? Effect.die("no refresh"),
@@ -245,7 +245,7 @@ describe("refresh", () => {
 
   test("sends one request for concurrent and later refreshes of the same token", async () => {
     using tokens = tokenEndpoint([
-      { status: 200, body: { access_token: "new-access", refresh_token: "rotated", expires_in: 900 } },
+      { status: 200, body: { access_token: "new-access", refresh_token: "rotated", expires_in: 900, token_type: "Bearer" } },
     ])
     const method = registration(optionsFor(tokens.url))
     const current = credentialWith(`refresh-${crypto.randomUUID()}`)
@@ -260,8 +260,8 @@ describe("refresh", () => {
 
   test("asks again when the server did not rotate the refresh token", async () => {
     using tokens = tokenEndpoint([
-      { status: 200, body: { access_token: "first", expires_in: 900 } },
-      { status: 200, body: { access_token: "second", expires_in: 900 } },
+      { status: 200, body: { access_token: "first", expires_in: 900, token_type: "Bearer" } },
+      { status: 200, body: { access_token: "second", expires_in: 900, token_type: "Bearer" } },
     ])
     const method = registration(optionsFor(tokens.url))
     const current = credentialWith(`refresh-${crypto.randomUUID()}`)
@@ -271,18 +271,40 @@ describe("refresh", () => {
     expect(tokens.forms).toHaveLength(2)
   })
 
-  test("accepts Bearer in any case, and refuses another token type", async () => {
+  test("accepts Bearer in any case, and refuses another or a missing token type", async () => {
     using tokens = tokenEndpoint([
       { status: 200, body: { access_token: "lowercase", expires_in: 900, token_type: "bearer" } },
+      { status: 200, body: { access_token: "uppercase", expires_in: 900, token_type: "BEARER" } },
       { status: 200, body: { access_token: "bound", expires_in: 900, token_type: "DPoP" } },
+      { status: 200, body: { access_token: "untyped", expires_in: 900 } },
     ])
     const method = registration(optionsFor(tokens.url))
     const current = credentialWith(`refresh-${crypto.randomUUID()}`)
     const run = () => method.refresh?.(current) ?? Effect.die("no refresh")
     expect((await Effect.runPromise(run())).access).toBe("lowercase")
-    const error = await Effect.runPromise(Effect.flip(run()))
-    expect(String(error)).toContain("issued a DPoP token")
-    expect(tokens.forms).toHaveLength(2)
+    expect((await Effect.runPromise(run())).access).toBe("uppercase")
+    expect(String(await Effect.runPromise(Effect.flip(run())))).toContain(
+      "issued a DPoP token; only Bearer tokens are supported",
+    )
+    expect(String(await Effect.runPromise(Effect.flip(run())))).toContain("token_type")
+    expect(tokens.forms).toHaveLength(4)
+  })
+
+  test("quotes an error code or token type only when it fits the error code grammar", async () => {
+    using tokens = tokenEndpoint([
+      { status: 400, body: { error: 'invalid_grant"\ninjected' } },
+      { status: 200, body: { access_token: "a", expires_in: 900, token_type: "x\ninjected" } },
+      { status: 200, body: { access_token: "a", expires_in: 900, token_type: "x".repeat(65) } },
+    ])
+    const method = registration(optionsFor(tokens.url))
+    const current = credentialWith(`refresh-${crypto.randomUUID()}`)
+    const run = () => Effect.runPromise(Effect.flip(method.refresh?.(current) ?? Effect.die("no refresh")))
+    const [code, type, long] = [String(await run()), String(await run()), String(await run())]
+    expect(code).toContain("token endpoint answered 400")
+    expect(code).not.toContain("injected")
+    expect(type).toContain("issued an unsupported token")
+    expect(type).not.toContain("injected")
+    expect(long).toContain("issued an unsupported token")
   })
 
   test("does not follow a redirect with the refresh token", async () => {
@@ -303,13 +325,13 @@ describe("refresh", () => {
     const error = await Effect.runPromise(
       Effect.flip(registration(optionsFor(tokens.url)).refresh?.(current) ?? Effect.die("no refresh")),
     )
-    expect(String(error)).toContain("no usable access token")
+    expect(String(error)).toContain("no usable access_token, token_type and expires_in")
   })
 
   test("fails with the OAuth error code, and retries on the next attempt", async () => {
     using tokens = tokenEndpoint([
       { status: 400, body: { error: "invalid_grant", error_description: "do not echo" } },
-      { status: 200, body: { access_token: "new-access", expires_in: 900 } },
+      { status: 200, body: { access_token: "new-access", expires_in: 900, token_type: "Bearer" } },
     ])
     const method = registration(optionsFor(tokens.url))
     const current = credentialWith(`refresh-${crypto.randomUUID()}`)
