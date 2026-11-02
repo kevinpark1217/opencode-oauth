@@ -75,9 +75,10 @@ method with the sign-in.
 
 ### Updates
 
-OpenCode checks for a new version daily and shows "update available" in
-`/plugins`. Press `ctrl+u` there, or run `opencode plugin update`. If the plugin
-then fails to load, update OpenCode too.
+OpenCode checks for a new plugin release when it starts and daily, and shows
+"update available" in `/plugins`. Press `ctrl+u` there, or run
+`opencode plugin update`. If the plugin then fails to load, `/plugins` shows
+why: the release may need a newer OpenCode or a changed option.
 
 Pinning a version (`opencode-oauth@<version>`) turns update checks off.
 
