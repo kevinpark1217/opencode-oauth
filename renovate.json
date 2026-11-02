@@ -3,7 +3,7 @@
   "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
   "packageRules": [
     {
-      "description": "OpenCode hands plugins its own effect and runs them on its own Bun: bump these together, by hand (CONTRIBUTING.md, Making a change).",
+      "description": "OpenCode hands plugins its own effect and runs them on its own Bun: bump these together, by hand (CONTRIBUTING.md, Updating dependencies).",
       "matchPackageNames": ["@opencode/plugin", "effect", "@types/bun", "bun"],
       "groupName": "OpenCode host",
       "dependencyDashboardApproval": true

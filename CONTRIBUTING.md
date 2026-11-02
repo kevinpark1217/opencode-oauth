@@ -20,12 +20,15 @@ To try a checkout in OpenCode, run `bun pm pack` and set the plugin's `package` 
 ## Making a change
 
 - Fix the cause, not the symptom. OAuth code follows the specs (RFC 6749, 6750, 7636, 8252, 9700), and tokens, codes and response bodies never go into errors or logs.
-- Add a test when it would catch a real bug or security issue, and check that it fails without your change.
+- Add a test only when it would catch a real bug or security issue, and check that it fails without your change.
 - Add a comment only when it says something the code can't, such as why it's done this way or what a spec requires.
 - Update `README.md` when behavior, options or requirements change. Don't add other doc files.
-- Don't write anything that goes stale unless someone remembers to update it, such as a release number in the docs; use `@latest` or `<version>`.
-- Write docs, comments and pull requests for people: short and plain.
-- OpenCode hands plugins its own `effect` and runs them on its own Bun, so `@opencode/plugin`, `effect`, `@types/bun` and `packageManager` move together: `effect` to the version `@opencode/plugin` depends on, Bun to the one that OpenCode release compiles in. Raise the `@opencode/plugin` peer range in `package.json`, and the minimum in README's Requirements, only when the code needs a newer plugin API.
+- Don't write anything that stays correct only if someone remembers to update it, such as a release number in the docs; use `@latest` or `<version>`.
+- Write docs, comments and pull requests for people: short, plain and self-contained.
+
+## Updating dependencies
+
+OpenCode hands plugins its own `effect` and runs them on its own Bun, so `@opencode/plugin`, `effect`, `@types/bun` and `packageManager` move together: `effect` to the version `@opencode/plugin` depends on, Bun to the one that OpenCode release compiles in. Raise the `@opencode/plugin` peer range in `package.json`, and the minimum in README's Requirements, only when the code needs a newer plugin API.
 
 ## Opening a pull request
 
