@@ -34,10 +34,10 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: package.json
-      # npm 11.5.1 or later publishes over OIDC; this Node bundles npm 11.19.1.
+      # npm 11.5.1 or later publishes over OIDC; this Node bundles npm 11.20.0.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24.22.1
+          node-version: 26.13.0
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
       - run: bun install --frozen-lockfile
