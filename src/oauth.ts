@@ -5,7 +5,7 @@ import type {
   IntegrationOAuthAuthorization,
   IntegrationOAuthMethodRegistration,
 } from "@opencode/plugin/effect/integration"
-import { Deferred, Effect, Schema, type SchemaIssue, type Scope } from "effect"
+import { Deferred, Effect, Schema, type SchemaIssue, SchemaTransformation, type Scope } from "effect"
 import { createServer, type ServerResponse } from "node:http"
 
 const OptionsSchema = Schema.Struct({
@@ -26,15 +26,21 @@ const OptionsSchema = Schema.Struct({
 })
 export type Options = typeof OptionsSchema.Type
 
+// expires_in's grammar is digits (RFC 6749 appendix A.14), and some servers send
+// it as a JSON string of them.
+const DigitsAsNumber = Schema.String.check(Schema.isPattern(/^\d+$/)).pipe(
+  Schema.decodeTo(Schema.Finite, SchemaTransformation.numberFromString),
+)
+
 // The token endpoint's success response (RFC 6749 section 5.1), with what this
 // client needs of it. token_type is required there. expires_in is only
-// recommended, but OpenCode renews by it; its grammar is digits (appendix A.14),
-// and some servers send it as a JSON string.
+// recommended, but OpenCode renews by it. Some servers send a null
+// refresh_token for none.
 const TokenResponse = Schema.Struct({
   access_token: Schema.NonEmptyString,
   token_type: Schema.NonEmptyString,
-  expires_in: Schema.Union([Schema.Finite, Schema.FiniteFromString]).check(Schema.isGreaterThan(0)),
-  refresh_token: Schema.optional(Schema.NonEmptyString),
+  expires_in: Schema.Union([Schema.Finite, DigitsAsNumber]).check(Schema.isGreaterThan(0)),
+  refresh_token: Schema.optional(Schema.NullOr(Schema.NonEmptyString)),
 })
 const tokenFields: ReadonlyArray<string> = Object.keys(TokenResponse.fields)
 
@@ -237,11 +243,11 @@ function authorize(options: Options): Effect.Effect<IntegrationOAuthAuthorizatio
       const description = url.searchParams.get("error_description")
       const code = url.searchParams.get("code")
       if (error !== null || description !== null || code === null) {
-        // The server's own words, when they are plain text like a token
-        // endpoint's error code; otherwise a fixed message.
+        // The server's description or error code (RFC 6749 section 4.1.2.1),
+        // under the same rule as a token endpoint's; otherwise a fixed message.
+        const shown = quotable(description, 256) ? description : quotable(error) ? error : undefined
         const message =
-          [description, error].find((text) => quotable(text, 256)) ??
-          (error === null && description === null ? "No authorization code" : "Authorization failed")
+          shown ?? (error === null && description === null ? "No authorization code" : "Authorization failed")
         reply(response, 400, message)
         Effect.runFork(Deferred.fail(received, new Error(message)))
         return

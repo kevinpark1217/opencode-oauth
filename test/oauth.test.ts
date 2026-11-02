@@ -62,6 +62,7 @@ function refresher(tokenURL: string) {
   const current = credentialWith(`refresh-${crypto.randomUUID()}`)
   const run = () => method.refresh?.(current) ?? Effect.die("no refresh")
   return {
+    current,
     credential: () => Effect.runPromise(run()),
     error: async () => {
       const error = await Effect.runPromise(Effect.flip(run()))
@@ -186,23 +187,32 @@ describe("sign-in", () => {
     expect(tokens.forms).toHaveLength(0)
   })
 
-  test("shows the error code instead of a description that is not plain text", async () => {
-    using tokens = tokenEndpoint([])
-    let page: Promise<Response> | undefined
-    const error = await Effect.runPromise(
-      Effect.flip(
-        signIn(optionsFor(tokens.url), (url) => {
-          const description = encodeURIComponent("line\n\u001b[31minjected")
-          page = fetch(
-            `${redirectOf(url)}?error=access_denied&error_description=${description}&state=${url.searchParams.get("state")}`,
-          )
-          return page
-        }),
-      ),
-    )
-    expect(String(error)).toContain("access_denied")
-    expect(String(error)).not.toContain("injected")
-    expect(await (await page)?.text()).toBe("access_denied")
+  test("shows a description or error code only when it is short plain text", async () => {
+    // Fails a sign-in with a redirect carrying `params`, and returns the message,
+    // which the browser tab must show too.
+    const failedWith = async (params: Record<string, string>) => {
+      let page: Promise<Response> | undefined
+      const error = await Effect.runPromise(
+        Effect.flip(
+          signIn(optionsFor("https://auth.example/token"), (url) => {
+            const query = new URLSearchParams({ ...params, state: url.searchParams.get("state") ?? "" })
+            page = fetch(`${redirectOf(url)}?${query}`)
+            return page
+          }),
+        ),
+      )
+      const message = error instanceof Error ? error.message : String(error)
+      expect(await (await page)?.text()).toBe(message)
+      return message
+    }
+    const denied = { error: "access_denied" }
+    expect(await failedWith({ ...denied, error_description: "line\n\u001b[31minjected" })).toBe("access_denied")
+    expect(await failedWith({ ...denied, error_description: "d".repeat(256) })).toBe("d".repeat(256))
+    expect(await failedWith({ ...denied, error_description: "d".repeat(257) })).toBe("access_denied")
+    expect(await failedWith({ error: "e".repeat(64) })).toBe("e".repeat(64))
+    expect(await failedWith({ error: "e".repeat(65) })).toBe("Authorization failed")
+    expect(await failedWith({ error: "bad\ncode" })).toBe("Authorization failed")
+    expect(await failedWith({})).toBe("No authorization code")
   })
 
   test("answers other paths with 404 and a second callback with 409", async () => {
@@ -329,20 +339,27 @@ describe("refresh", () => {
   })
 
   test("accepts expires_in as a number or a string of digits, and names a bad one", async () => {
+    const refused = [0, "0", "soon", " 900", "0x10", "1e3", "+900", "9.5", undefined]
     using tokens = tokenEndpoint([
       { status: 200, body: { access_token: "string", expires_in: "900", token_type: "Bearer" } },
-      { status: 200, body: { access_token: "zero", expires_in: 0, token_type: "Bearer" } },
-      { status: 200, body: { access_token: "word", expires_in: "soon", token_type: "Bearer" } },
-      { status: 200, body: { access_token: "missing", token_type: "Bearer" } },
+      ...refused.map((expires_in) => ({ status: 200, body: { access_token: "a", expires_in, token_type: "Bearer" } })),
     ])
     const refresh = refresher(tokens.url)
     const before = Date.now()
     const credential = await refresh.credential()
     expect(credential.access).toBe("string")
     expect(credential.expires).toBeGreaterThanOrEqual(before + 900_000)
-    for (let i = 0; i < 3; i++) {
-      expect(await refresh.error()).toBe("token endpoint's response has no valid expires_in")
+    for (const value of refused) {
+      expect([value, await refresh.error()]).toEqual([value, "token endpoint's response has no valid expires_in"])
     }
+  })
+
+  test("treats a null refresh_token as none", async () => {
+    using tokens = tokenEndpoint([
+      { status: 200, body: { access_token: "new-access", expires_in: 900, token_type: "Bearer", refresh_token: null } },
+    ])
+    const refresh = refresher(tokens.url)
+    expect(await refresh.credential()).toMatchObject({ access: "new-access", refresh: refresh.current.refresh })
   })
 
   test("quotes an error code or token type only when it is short plain text", async () => {
