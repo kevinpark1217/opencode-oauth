@@ -83,6 +83,21 @@ describe("options", () => {
     expect(() => parseOptions(withSearch("http://search.example/search"))).toThrow("searchURL must be an https URL")
   })
 
+  test("takes an issuer instead of the endpoints, but not both", () => {
+    const base = { provider: "example", clientID: "opencode", scope: "openid" }
+    expect(() => parseOptions({ ...base, issuer: "https://auth.example/realms/a" })).not.toThrow()
+    expect(() => parseOptions({ ...base, issuer: "http://auth.example" })).toThrow("issuer must be an https URL")
+    expect(() => parseOptions({ ...base, issuer: "https://auth.example?tenant=a" })).toThrow(
+      "issuer cannot have a query or fragment",
+    )
+    expect(() => parseOptions({ ...base, issuer: "https://auth.example", tokenEndpoint: "https://auth.example/t" })).toThrow(
+      "set issuer, or authorizationEndpoint and tokenEndpoint, not both",
+    )
+    expect(() => parseOptions({ ...base, tokenEndpoint: "https://auth.example/t" })).toThrow(
+      "set issuer, or both authorizationEndpoint and tokenEndpoint",
+    )
+  })
+
   test("refuses authorizationParams that would replace the grant's own", () => {
     const withParams = (authorizationParams: Record<string, string>) => ({
       ...optionsFor("https://auth.example/token"),
@@ -412,5 +427,116 @@ describe("refresh", () => {
     const next = await Effect.runPromise(method.refresh?.(current) ?? Effect.die("no refresh"))
     expect(next.access).toBe("new-access")
     expect(tokens.forms).toHaveLength(2)
+  })
+})
+
+// An authorization server on this machine that publishes its metadata at one
+// well-known location and answers token requests with the scripted responses.
+function authServer(
+  input: {
+    at?: "openid-configuration" | "oauth-authorization-server"
+    metadata?: (issuer: string) => Record<string, unknown>
+    failFirst?: number
+    tokens?: Array<{ status: number; body: unknown }>
+  } = {},
+) {
+  const paths: string[] = []
+  const forms: Array<Record<string, string>> = []
+  const tokens = [...(input.tokens ?? [])]
+  let failures = input.failFirst ?? 0
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(request): Promise<Response> {
+      const path = new URL(request.url).pathname
+      paths.push(path)
+      if (path === "/token") {
+        forms.push(Object.fromEntries(new URLSearchParams(await request.text())))
+        const next = tokens.shift() ?? { status: 500, body: {} }
+        return Response.json(next.body, { status: next.status })
+      }
+      if (path !== `/.well-known/${input.at ?? "openid-configuration"}`) return new Response(null, { status: 404 })
+      if (failures-- > 0) return new Response(null, { status: 503 })
+      return Response.json({
+        issuer,
+        authorization_endpoint: `${issuer}/authorize`,
+        token_endpoint: `${issuer}/token`,
+        code_challenge_methods_supported: ["S256"],
+        ...input.metadata?.(issuer),
+      })
+    },
+  })
+  const issuer: string = `http://127.0.0.1:${server.port}`
+  const options: Options = { provider: "example", clientID: "opencode", issuer, scope: "openid offline_access" }
+  return { issuer, options, paths, forms, [Symbol.dispose]: () => server.stop(true) }
+}
+
+const bearer = { status: 200, body: { access_token: "access", refresh_token: "refresh", expires_in: 900, token_type: "Bearer" } }
+
+// The browser side of a sign-in: follows the redirect with this attempt's state
+// and a code, plus `extra` parameters such as `iss`.
+const callback = (extra: Record<string, string> = {}) => (url: URL) =>
+  fetch(`${redirectOf(url)}?${new URLSearchParams({ code: "the-code", state: url.searchParams.get("state") ?? "", ...extra })}`)
+
+const failure = (effect: Effect.Effect<unknown, unknown, never>) =>
+  Effect.runPromise(Effect.flip(effect)).then((error) => (error instanceof Error ? error.message : String(error)))
+
+describe("discovery", () => {
+  test("signs in with the endpoints from the issuer's OpenID Connect metadata", async () => {
+    using auth = authServer({ tokens: [bearer] })
+    const { url, credential } = await Effect.runPromise(signIn(auth.options, callback()))
+    expect(`${url.origin}${url.pathname}`).toBe(`${auth.issuer}/authorize`)
+    expect(auth.forms[0]).toMatchObject({ grant_type: "authorization_code", code: "the-code" })
+    expect(credential.access).toBe("access")
+    expect(auth.paths).toEqual(["/.well-known/openid-configuration", "/token"])
+  })
+
+  test("falls back to the RFC 8414 location", async () => {
+    using auth = authServer({ at: "oauth-authorization-server", tokens: [bearer] })
+    await Effect.runPromise(signIn(auth.options, callback()))
+    expect(auth.paths).toEqual(["/.well-known/openid-configuration", "/.well-known/oauth-authorization-server", "/token"])
+  })
+
+  test("refuses metadata for another issuer, with insecure endpoints, or without S256", async () => {
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ issuer: "https://evil.example" }, 'authorization server metadata names "https://evil.example", not'],
+      [{ token_endpoint: "http://evil.example/token" }, "authorization server metadata's token_endpoint must be an https URL"],
+      [{ code_challenge_methods_supported: ["plain"] }, "authorization server does not support PKCE with S256"],
+      [{ authorization_endpoint: 42 }, "authorization server metadata has no valid authorization_endpoint"],
+    ]
+    for (const [metadata, message] of cases) {
+      using auth = authServer({ metadata: () => metadata })
+      expect(await failure(Effect.scoped(registration(auth.options).authorize({})))).toContain(message)
+      expect(auth.paths).not.toContain("/token")
+    }
+  })
+
+  test("checks the issuer in the authorization response (RFC 9207)", async () => {
+    using strict = authServer({ metadata: () => ({ authorization_response_iss_parameter_supported: true }), tokens: [bearer] })
+    expect(await failure(signIn(strict.options, callback()))).toBe("Authorization response has no issuer")
+    expect(await failure(signIn(strict.options, callback({ iss: "https://evil.example" })))).toBe(
+      "Authorization response came from another issuer",
+    )
+    expect((await Effect.runPromise(signIn(strict.options, callback({ iss: strict.issuer })))).credential.access).toBe("access")
+
+    using lenient = authServer({ tokens: [bearer] })
+    expect(await failure(signIn(lenient.options, callback({ iss: "https://evil.example" })))).toBe(
+      "Authorization response came from another issuer",
+    )
+    expect((await Effect.runPromise(signIn(lenient.options, callback()))).credential.access).toBe("access")
+  })
+
+  test("keeps valid metadata for later sign-ins and refreshes, and retries after a failure", async () => {
+    using auth = authServer({ failFirst: 1, tokens: [bearer, { ...bearer, body: { ...bearer.body, access_token: "renewed" } }] })
+    const method = registration(auth.options)
+    expect(await failure(Effect.scoped(method.authorize({})))).toContain("answered 503")
+    const url = await Effect.runPromise(Effect.scoped(Effect.map(method.authorize({}), (a) => new URL(a.url))))
+    expect(`${url.origin}${url.pathname}`).toBe(`${auth.issuer}/authorize`)
+    const renewed = await Effect.runPromise(method.refresh?.(credentialWith(`refresh-${crypto.randomUUID()}`)) ?? Effect.die("no refresh"))
+    expect(renewed.access).toBe("access")
+    expect(auth.paths.filter((path) => path.startsWith("/.well-known/"))).toEqual([
+      "/.well-known/openid-configuration",
+      "/.well-known/openid-configuration",
+    ])
   })
 })
