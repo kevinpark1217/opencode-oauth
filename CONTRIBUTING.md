@@ -21,7 +21,7 @@ To try a checkout in OpenCode, run `bun pm pack` and set the plugin's `package` 
 - **Dependencies:** OpenCode hands plugins its own `effect` and runs them on its own Bun, so `@opencode/plugin`, `effect`, `@types/bun` and `packageManager` move together: `effect` to the version `@opencode/plugin` depends on, Bun to the one that OpenCode release compiles in. Don't bump one alone. Raise the `@opencode/plugin` peer range in `package.json`, and the minimum in README's Requirements, only when the code needs a newer plugin API.
 - **Commits:** [Conventional Commits](https://www.conventionalcommits.org). Pull requests are squash-merged, so the PR title (or a lone commit's title) becomes the commit that releases are built from. Before 1.0, a breaking change (`feat!`) bumps the minor version.
 - **Pull requests:** every change goes through one, with passing CI.
-- **AI assistance:** allowed, but you must understand and answer for every line. Say in the pull request description which AI tools you used and what they did. Don't credit them in commits: no co-author trailers or "generated with" footers.
+- **AI assistance:** allowed, but you must understand and answer for every line. Say in the pull request description which AI tools you used and what they did, or that you used none. Don't credit them in commits: no co-author trailers or "generated with" footers.
 
 ## Releases
 
