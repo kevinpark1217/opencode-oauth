@@ -18,7 +18,8 @@ const OptionsSchema = Schema.Struct({
 })
 export type Options = typeof OptionsSchema.Type
 
-// Some servers send expires_in as a string of digits (RFC 6749 appendix A.14).
+// expires_in is digits (RFC 6749 appendix A.14); some servers send them as a
+// JSON string.
 const DigitsAsNumber = Schema.String.check(Schema.isPattern(/^\d+$/)).pipe(
   Schema.decodeTo(Schema.Finite, SchemaTransformation.numberFromString),
 )
@@ -103,7 +104,7 @@ const reply = (response: ServerResponse, status: number, text: string) =>
     .end(text)
 
 // Server text reaches an error message only when it is short and fits OAuth's
-// error grammar (RFC 6749 appendix A.7, A.8).
+// error grammar: printable ASCII without `"` or `\` (RFC 6749 appendix A.7, A.8).
 const quotable = (value: unknown, max = 64): value is string =>
   typeof value === "string" && value.length <= max && /^[\x20-\x21\x23-\x5B\x5D-\x7E]+$/.test(value)
 

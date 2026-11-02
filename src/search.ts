@@ -33,6 +33,7 @@ export function search(searchURL: string, query: string, accessToken: string) {
       url.searchParams.set("format", "json")
       const response = await fetch(url, {
         headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+        // The token goes to searchURL only.
         redirect: "error",
         signal: AbortSignal.any([signal, AbortSignal.timeout(searchTimeoutMs)]),
       })

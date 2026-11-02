@@ -34,14 +34,16 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: package.json
-      # Needs npm 11.15+ for `npm stage publish`. No registry-url: its .npmrc
-      # turns a failed OIDC exchange into an opaque 404 instead of ENEEDAUTH.
+      # Needs npm 11.15+ for `npm stage publish`. No registry-url: its .npmrc holds
+      # an unset ${NODE_AUTH_TOKEN}, which npm sends as a literal token when the
+      # OIDC exchange fails, so the failure shows as a 404 instead of ENEEDAUTH.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 26.13.0
           package-manager-cache: false
       - run: bun install --frozen-lockfile
       - run: bun test
-      # Waits for a maintainer's 2FA approval on npmjs.com. --provenance fails the
-      # job rather than staging without provenance.
+      # Waits for a maintainer's 2FA approval on npmjs.com. The trusted publisher
+      # there allows only a staged publish; keep it that way. --provenance fails
+      # the job rather than staging without provenance.
       - run: npm stage publish --provenance
