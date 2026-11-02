@@ -1,3 +1,5 @@
+<img src=".github/assets/logo.svg" width="96" align="right" alt="">
+
 # opencode-oauth
 
 An [OpenCode](https://opencode.ai) plugin that signs in to an OpenAI-compatible
@@ -10,6 +12,8 @@ OpenCode opens the browser for the authorization code grant with PKCE
 ([RFC 8252](https://www.rfc-editor.org/rfc/rfc8252)), stores the tokens, renews
 them with the refresh token, and sends the access token to the provider as its
 bearer. Nothing in the plugin is specific to one identity provider.
+
+![Signing in through an identity provider with /connect, then chatting with the provider in OpenCode](.github/assets/demo.gif)
 
 ## Requirements
 
