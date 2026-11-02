@@ -1,6 +1,6 @@
 # Agent instructions
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) first: its commands and rules apply to you. In addition:
+Read [CONTRIBUTING.md](CONTRIBUTING.md) first and follow it. In addition:
 
 - Open an issue or pull request only when a person asks for that one.
 - Before the change is submitted for review, have it reviewed by a fresh session that hasn't seen the work, ideally on a different model, and address what it finds. If you can't, say so in the pull request.
