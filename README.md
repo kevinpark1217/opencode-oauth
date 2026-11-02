@@ -23,8 +23,11 @@ bearer. Nothing in the plugin is specific to one identity provider.
   - allows the redirect URI `http://127.0.0.1:<port>/callback`. A server that
     follows RFC 8252 section 7.3 accepts a loopback redirect on any port, so
     `port` can stay unset; otherwise register a fixed port and set `port` to it;
-  - is issued refresh tokens, often by granting it the `offline_access` scope,
-    with token responses that include `expires_in`.
+  - is issued refresh tokens, often by granting it the `offline_access` scope;
+  - is issued Bearer access tokens: token responses must include `token_type`
+    `Bearer` (in any case) and `expires_in`. A token of another type, such as a
+    DPoP-bound one, is refused, because OpenCode sends the token as a Bearer
+    token.
 - **A provider that accepts the access token** as `Authorization: Bearer …`, such
   as an OpenAI-compatible server behind a gateway that validates the token (for
   example oauth2-proxy with `--skip-jwt-bearer-tokens`).
@@ -128,8 +131,9 @@ The SearXNG instance must allow JSON output (`json` in `search.formats` in its
   `state`; anything else on the port is refused without ending the sign-in.
 - Concurrent renewals of one refresh token share a single request, so a server
   that revokes a reused rotated refresh token does not sign you out.
-- Error messages carry an HTTP status and the OAuth error code, never a response
-  body.
+- Error messages carry an HTTP status and, only when it is short plain text, the
+  server's OAuth error code, error description or refused token type; never a
+  response body.
 
 Report vulnerabilities privately, as [SECURITY.md](SECURITY.md) describes.
 

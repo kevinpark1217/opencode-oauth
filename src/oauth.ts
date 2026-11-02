@@ -5,7 +5,7 @@ import type {
   IntegrationOAuthAuthorization,
   IntegrationOAuthMethodRegistration,
 } from "@opencode/plugin/effect/integration"
-import { Deferred, Effect, Schema, type Scope } from "effect"
+import { Deferred, Effect, Schema, type SchemaIssue, SchemaTransformation, type Scope } from "effect"
 import { createServer, type ServerResponse } from "node:http"
 
 const OptionsSchema = Schema.Struct({
@@ -26,11 +26,42 @@ const OptionsSchema = Schema.Struct({
 })
 export type Options = typeof OptionsSchema.Type
 
+// expires_in's grammar is digits (RFC 6749 appendix A.14), and some servers send
+// it as a JSON string of them.
+const DigitsAsNumber = Schema.String.check(Schema.isPattern(/^\d+$/)).pipe(
+  Schema.decodeTo(Schema.Finite, SchemaTransformation.numberFromString),
+)
+
+// The token endpoint's success response (RFC 6749 section 5.1), with what this
+// client needs of it. token_type is required there. expires_in is only
+// recommended, but OpenCode renews by it. Some servers send a null
+// refresh_token for none.
 const TokenResponse = Schema.Struct({
   access_token: Schema.NonEmptyString,
-  refresh_token: Schema.optional(Schema.NonEmptyString),
-  expires_in: Schema.Finite.check(Schema.isGreaterThan(0)),
+  token_type: Schema.NonEmptyString,
+  expires_in: Schema.Union([Schema.Finite, DigitsAsNumber]).check(Schema.isGreaterThan(0)),
+  refresh_token: Schema.optional(Schema.NullOr(Schema.NonEmptyString)),
 })
+const tokenFields: ReadonlyArray<string> = Object.keys(TokenResponse.fields)
+
+// The TokenResponse field a decode failed at: one of the schema's own field
+// names, never anything taken from the response.
+function failedField(issue: SchemaIssue.Issue): string | undefined {
+  switch (issue._tag) {
+    case "Pointer": {
+      const [field] = issue.path
+      return typeof field === "string" && tokenFields.includes(field) ? field : undefined
+    }
+    case "Composite":
+    case "AnyOf":
+      return issue.issues.map(failedField).find((field) => field !== undefined)
+    case "Filter":
+    case "Encoding":
+      return failedField(issue.issue)
+    default:
+      return undefined
+  }
+}
 
 const methodID = Integration.MethodID.make("oauth")
 const callbackPath = "/callback"
@@ -83,32 +114,66 @@ const reply = (response: ServerResponse, status: number, text: string) =>
     })
     .end(text)
 
-// One token request. A refresh may omit refresh_token, which keeps the old one
-// (RFC 6749 section 6). Error messages carry the OAuth error code, never a body.
+// Error messages quote text from a server (an error code, its description, or a
+// token type) only when it is short and fits the grammar of OAuth's error fields
+// (RFC 6749 appendix A.7, A.8): printable ASCII without `"` or `\`. Anything
+// else in a response never reaches a message.
+const quotable = (value: unknown, max = 64): value is string =>
+  typeof value === "string" && value.length <= max && /^[\x20-\x21\x23-\x5B\x5D-\x7E]+$/.test(value)
+
+// Sends one token request (RFC 6749 section 3.2) and returns the response's JSON,
+// or fails with the HTTP status and the OAuth error code (section 5.2).
+function postTokenRequest(client: Pick<Options, "tokenEndpoint" | "clientID">, grant: Record<string, string>) {
+  return Effect.tryPromise({
+    try: async (signal): Promise<unknown> => {
+      const response = await fetch(client.tokenEndpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+        body: new URLSearchParams({ ...grant, client_id: client.clientID }),
+        // The body carries a code or a refresh token: never follow it elsewhere.
+        redirect: "error",
+        signal: AbortSignal.any([signal, AbortSignal.timeout(tokenRequestTimeoutMs)]),
+      })
+      const json: unknown = await response.json().catch(() => undefined)
+      if (!response.ok) {
+        const code = (json as { error?: unknown } | undefined)?.error
+        throw new Error(`token endpoint answered ${response.status}${quotable(code) ? ` (${code})` : ""}`)
+      }
+      return json
+    },
+    catch: asError,
+  })
+}
+
+// Accepts a token response only for a token OpenCode can present. OpenCode and
+// the web search send it as a Bearer token (RFC 6750), and a client must not use
+// a token whose type it does not understand (RFC 6749 section 7.1), such as a
+// DPoP-bound one. Type names compare case-insensitively (section 5.1).
+function acceptTokenResponse(body: unknown) {
+  return Effect.gen(function* () {
+    const tokens = yield* Schema.decodeUnknownEffect(TokenResponse)(body).pipe(
+      Effect.mapError((error) => {
+        const field = failedField(error.issue)
+        return new Error(
+          field === undefined
+            ? "token endpoint returned no JSON token response"
+            : `token endpoint's response has no valid ${field}`,
+        )
+      }),
+    )
+    if (tokens.token_type.toLowerCase() !== "bearer") {
+      const type = quotable(tokens.token_type) ? `of type "${tokens.token_type}"` : "of an unsupported type"
+      return yield* Effect.fail(new Error(`token endpoint issued a token ${type}; only Bearer tokens are supported`))
+    }
+    return tokens
+  })
+}
+
+// One grant at the token endpoint, as the credential OpenCode stores. A refresh
+// may omit refresh_token, which keeps the old one (RFC 6749 section 6).
 function requestToken(options: Options, grant: Record<string, string>, previousRefresh?: string) {
   return Effect.gen(function* () {
-    const body = yield* Effect.tryPromise({
-      try: async (signal) => {
-        const response = await fetch(options.tokenEndpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
-          body: new URLSearchParams({ ...grant, client_id: options.clientID }),
-          // The body carries a code or a refresh token: never follow it elsewhere.
-          redirect: "error",
-          signal: AbortSignal.any([signal, AbortSignal.timeout(tokenRequestTimeoutMs)]),
-        })
-        const json: unknown = await response.json().catch(() => undefined)
-        if (!response.ok) {
-          const code = (json as { error?: unknown } | undefined)?.error
-          throw new Error(`token endpoint answered ${response.status}${typeof code === "string" ? ` (${code})` : ""}`)
-        }
-        return json
-      },
-      catch: asError,
-    })
-    const tokens = yield* Schema.decodeUnknownEffect(TokenResponse)(body).pipe(
-      Effect.mapError(() => new Error("token endpoint returned no usable access token")),
-    )
+    const tokens = yield* postTokenRequest(options, grant).pipe(Effect.flatMap(acceptTokenResponse))
     const refresh = tokens.refresh_token ?? previousRefresh
     if (refresh === undefined) {
       return yield* Effect.fail(
@@ -174,10 +239,15 @@ function authorize(options: Options): Effect.Effect<IntegrationOAuthAuthorizatio
         reply(response, 400, "Sign-in state does not match")
         return
       }
-      const error = url.searchParams.get("error_description") ?? url.searchParams.get("error")
+      const error = url.searchParams.get("error")
+      const description = url.searchParams.get("error_description")
       const code = url.searchParams.get("code")
-      if (error !== null || code === null) {
-        const message = error ?? "No authorization code"
+      if (error !== null || description !== null || code === null) {
+        // The server's description or error code (RFC 6749 section 4.1.2.1),
+        // under the same rule as a token endpoint's; otherwise a fixed message.
+        const shown = quotable(description, 256) ? description : quotable(error) ? error : undefined
+        const message =
+          shown ?? (error === null && description === null ? "No authorization code" : "Authorization failed")
         reply(response, 400, message)
         Effect.runFork(Deferred.fail(received, new Error(message)))
         return
