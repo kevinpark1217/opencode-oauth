@@ -200,6 +200,25 @@ describe("sign-in", () => {
     expect(String(error)).toContain("no refresh token")
   })
 
+  test("refuses an access token that is not a Bearer token", async () => {
+    using tokens = tokenEndpoint([
+      { status: 200, body: { access_token: "access", refresh_token: "r", expires_in: 900, token_type: "DPoP" } },
+    ])
+    let page: Promise<Response> | undefined
+    const error = await Effect.runPromise(
+      Effect.flip(
+        signIn(optionsFor(tokens.url), (url) => {
+          page = fetch(`${redirectOf(url)}?code=the-code&state=${url.searchParams.get("state")}`)
+          return page
+        }),
+      ),
+    )
+    expect(String(error)).toContain("issued a DPoP token")
+    const shown = await page
+    expect(shown?.status).toBe(400)
+    expect(await shown?.text()).toContain("only Bearer tokens are supported")
+  })
+
   test("closes the loopback listener when the attempt ends", async () => {
     const redirect = await Effect.runPromise(
       Effect.scoped(
@@ -249,6 +268,20 @@ describe("refresh", () => {
     const run = () => Effect.runPromise(method.refresh?.(current) ?? Effect.die("no refresh"))
     expect((await run()).access).toBe("first")
     expect((await run()).access).toBe("second")
+    expect(tokens.forms).toHaveLength(2)
+  })
+
+  test("accepts Bearer in any case, and refuses another token type", async () => {
+    using tokens = tokenEndpoint([
+      { status: 200, body: { access_token: "lowercase", expires_in: 900, token_type: "bearer" } },
+      { status: 200, body: { access_token: "bound", expires_in: 900, token_type: "DPoP" } },
+    ])
+    const method = registration(optionsFor(tokens.url))
+    const current = credentialWith(`refresh-${crypto.randomUUID()}`)
+    const run = () => method.refresh?.(current) ?? Effect.die("no refresh")
+    expect((await Effect.runPromise(run())).access).toBe("lowercase")
+    const error = await Effect.runPromise(Effect.flip(run()))
+    expect(String(error)).toContain("issued a DPoP token")
     expect(tokens.forms).toHaveLength(2)
   })
 

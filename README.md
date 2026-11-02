@@ -24,7 +24,9 @@ bearer. Nothing in the plugin is specific to one identity provider.
     follows RFC 8252 section 7.3 accepts a loopback redirect on any port, so
     `port` can stay unset; otherwise register a fixed port and set `port` to it;
   - is issued refresh tokens, often by granting it the `offline_access` scope,
-    with token responses that include `expires_in`.
+    with token responses that include `expires_in`;
+  - is issued Bearer access tokens. A token response that names another
+    `token_type`, such as `DPoP`, is refused.
 - **A provider that accepts the access token** as `Authorization: Bearer …`, such
   as an OpenAI-compatible server behind a gateway that validates the token (for
   example oauth2-proxy with `--skip-jwt-bearer-tokens`).
@@ -128,8 +130,8 @@ The SearXNG instance must allow JSON output (`json` in `search.formats` in its
   `state`; anything else on the port is refused without ending the sign-in.
 - Concurrent renewals of one refresh token share a single request, so a server
   that revokes a reused rotated refresh token does not sign you out.
-- Error messages carry an HTTP status and the OAuth error code, never a response
-  body.
+- Error messages carry an HTTP status, the OAuth error code or a refused token
+  type, never a response body.
 
 Report vulnerabilities privately, as [SECURITY.md](SECURITY.md) describes.
 

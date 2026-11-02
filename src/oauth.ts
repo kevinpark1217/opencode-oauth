@@ -30,6 +30,7 @@ const TokenResponse = Schema.Struct({
   access_token: Schema.NonEmptyString,
   refresh_token: Schema.optional(Schema.NonEmptyString),
   expires_in: Schema.Finite.check(Schema.isGreaterThan(0)),
+  token_type: Schema.optional(Schema.String),
 })
 
 const methodID = Integration.MethodID.make("oauth")
@@ -109,6 +110,13 @@ function requestToken(options: Options, grant: Record<string, string>, previousR
     const tokens = yield* Schema.decodeUnknownEffect(TokenResponse)(body).pipe(
       Effect.mapError(() => new Error("token endpoint returned no usable access token")),
     )
+    // OpenCode sends the token as Bearer, and a client must not use a token type
+    // it does not understand (RFC 6749 section 7.1). Type names are compared
+    // case-insensitively (section 5.1); a response without one is taken as Bearer.
+    const type = tokens.token_type
+    if (type !== undefined && type.toLowerCase() !== "bearer") {
+      return yield* Effect.fail(new Error(`token endpoint issued a ${type} token; only Bearer tokens are supported`))
+    }
     const refresh = tokens.refresh_token ?? previousRefresh
     if (refresh === undefined) {
       return yield* Effect.fail(
