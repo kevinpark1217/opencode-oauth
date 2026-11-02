@@ -42,7 +42,7 @@ Add the plugin and the provider to your OpenCode config
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
     {
-      "package": "opencode-oauth@0.1.1", // x-release-please-version
+      "package": "opencode-oauth@latest",
       "options": {
         "provider": "my-llm",
         "clientID": "opencode",
@@ -72,6 +72,15 @@ OpenCode renews the token on its own from then on.
 
 Each plugin entry signs in to one provider, and replaces that provider's API key
 method with the sign-in.
+
+### Updates
+
+OpenCode checks for a new plugin release when it starts and daily, and shows
+"update available" in `/plugins`. Press `ctrl+u` there, or run
+`opencode plugin update`. If the plugin then fails to load, `/plugins` shows
+why: the release may need a newer OpenCode or a changed option.
+
+Pinning a version (`opencode-oauth@<version>`) turns update checks off.
 
 ### Options
 

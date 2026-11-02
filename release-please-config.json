@@ -5,8 +5,7 @@
   "packages": {
     ".": {
       "release-type": "node",
-      "package-name": "opencode-oauth",
-      "extra-files": ["README.md"]
+      "package-name": "opencode-oauth"
     }
   }
 }
