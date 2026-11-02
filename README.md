@@ -42,7 +42,7 @@ Add the plugin and the provider to your OpenCode config
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
     {
-      "package": "opencode-oauth@0.1.0", // x-release-please-version
+      "package": "opencode-oauth@0.1.1", // x-release-please-version
       "options": {
         "provider": "my-llm",
         "clientID": "opencode",
