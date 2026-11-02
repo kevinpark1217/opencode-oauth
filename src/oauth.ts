@@ -1,5 +1,3 @@
-// The sign-in: the authorization code grant with PKCE on a loopback redirect
-// (RFC 7636, RFC 8252), renewed with refresh tokens.
 import { Credential, Integration } from "@opencode/plugin/effect"
 import type {
   IntegrationOAuthAuthorization,
@@ -9,33 +7,25 @@ import { Deferred, Effect, Schema, type SchemaIssue, SchemaTransformation, type 
 import { createServer, type ServerResponse } from "node:http"
 
 const OptionsSchema = Schema.Struct({
-  // The key of the provider in the config's `providers`.
   provider: Schema.NonEmptyString,
   clientID: Schema.NonEmptyString,
   authorizationEndpoint: Schema.NonEmptyString,
   tokenEndpoint: Schema.NonEmptyString,
   scope: Schema.NonEmptyString,
-  // The loopback redirect's port. 0, the default, lets the OS pick one, for a
-  // server that matches a loopback redirect on any port (RFC 8252 7.3).
   port: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 65535 }))),
-  // Added to the authorization request, such as an `audience` some servers
-  // choose the access token's audience by.
   authorizationParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-  // A SearXNG /search that accepts the provider's access token.
   searchURL: Schema.optional(Schema.NonEmptyString),
 })
 export type Options = typeof OptionsSchema.Type
 
-// expires_in's grammar is digits (RFC 6749 appendix A.14), and some servers send
-// it as a JSON string of them.
+// expires_in is digits (RFC 6749 appendix A.14); some servers send them as a
+// JSON string.
 const DigitsAsNumber = Schema.String.check(Schema.isPattern(/^\d+$/)).pipe(
   Schema.decodeTo(Schema.Finite, SchemaTransformation.numberFromString),
 )
 
-// The token endpoint's success response (RFC 6749 section 5.1), with what this
-// client needs of it. token_type is required there. expires_in is only
-// recommended, but OpenCode renews by it. Some servers send a null
-// refresh_token for none.
+// RFC 6749 section 5.1. expires_in is optional there, but OpenCode renews by it.
+// Some servers send refresh_token: null for none.
 const TokenResponse = Schema.Struct({
   access_token: Schema.NonEmptyString,
   token_type: Schema.NonEmptyString,
@@ -44,8 +34,7 @@ const TokenResponse = Schema.Struct({
 })
 const tokenFields: ReadonlyArray<string> = Object.keys(TokenResponse.fields)
 
-// The TokenResponse field a decode failed at: one of the schema's own field
-// names, never anything taken from the response.
+// Returns only the schema's own field names, never text from the response.
 function failedField(issue: SchemaIssue.Issue): string | undefined {
   switch (issue._tag) {
     case "Pointer": {
@@ -114,15 +103,11 @@ const reply = (response: ServerResponse, status: number, text: string) =>
     })
     .end(text)
 
-// Error messages quote text from a server (an error code, its description, or a
-// token type) only when it is short and fits the grammar of OAuth's error fields
-// (RFC 6749 appendix A.7, A.8): printable ASCII without `"` or `\`. Anything
-// else in a response never reaches a message.
+// Server text reaches an error message only when it is short and fits OAuth's
+// error grammar: printable ASCII without `"` or `\` (RFC 6749 appendix A.7, A.8).
 const quotable = (value: unknown, max = 64): value is string =>
   typeof value === "string" && value.length <= max && /^[\x20-\x21\x23-\x5B\x5D-\x7E]+$/.test(value)
 
-// Sends one token request (RFC 6749 section 3.2) and returns the response's JSON,
-// or fails with the HTTP status and the OAuth error code (section 5.2).
 function postTokenRequest(client: Pick<Options, "tokenEndpoint" | "clientID">, grant: Record<string, string>) {
   return Effect.tryPromise({
     try: async (signal): Promise<unknown> => {
@@ -145,10 +130,8 @@ function postTokenRequest(client: Pick<Options, "tokenEndpoint" | "clientID">, g
   })
 }
 
-// Accepts a token response only for a token OpenCode can present. OpenCode and
-// the web search send it as a Bearer token (RFC 6750), and a client must not use
-// a token whose type it does not understand (RFC 6749 section 7.1), such as a
-// DPoP-bound one. Type names compare case-insensitively (section 5.1).
+// OpenCode sends the token as Bearer, and a client must not use a token type it
+// doesn't understand, such as DPoP (RFC 6749 section 7.1).
 function acceptTokenResponse(body: unknown) {
   return Effect.gen(function* () {
     const tokens = yield* Schema.decodeUnknownEffect(TokenResponse)(body).pipe(
@@ -169,8 +152,7 @@ function acceptTokenResponse(body: unknown) {
   })
 }
 
-// One grant at the token endpoint, as the credential OpenCode stores. A refresh
-// may omit refresh_token, which keeps the old one (RFC 6749 section 6).
+// A refresh may omit refresh_token, which keeps the old one (RFC 6749 section 6).
 function requestToken(options: Options, grant: Record<string, string>, previousRefresh?: string) {
   return Effect.gen(function* () {
     const tokens = yield* postTokenRequest(options, grant).pipe(Effect.flatMap(acceptTokenResponse))
@@ -243,8 +225,6 @@ function authorize(options: Options): Effect.Effect<IntegrationOAuthAuthorizatio
       const description = url.searchParams.get("error_description")
       const code = url.searchParams.get("code")
       if (error !== null || description !== null || code === null) {
-        // The server's description or error code (RFC 6749 section 4.1.2.1),
-        // under the same rule as a token endpoint's; otherwise a fixed message.
         const shown = quotable(description, 256) ? description : quotable(error) ? error : undefined
         const message =
           shown ?? (error === null && description === null ? "No authorization code" : "Authorization failed")

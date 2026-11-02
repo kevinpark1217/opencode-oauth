@@ -17,7 +17,7 @@ body:
     attributes:
       label: Environment
       description: Versions of opencode-oauth and OpenCode (`opencode --version`), your operating system, and your identity provider.
-      placeholder: opencode-oauth 0.1.0, OpenCode 2.1.4, macOS, Keycloak 26
+      placeholder: opencode-oauth <version>, OpenCode <version>, macOS, Keycloak <version>
     validations:
       required: true
   - type: textarea
