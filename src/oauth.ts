@@ -5,7 +5,7 @@ import type {
   IntegrationOAuthAuthorization,
   IntegrationOAuthMethodRegistration,
 } from "@opencode/plugin/effect/integration"
-import { Deferred, Effect, Schema, type Scope } from "effect"
+import { Deferred, Effect, Schema, type SchemaIssue, type Scope } from "effect"
 import { createServer, type ServerResponse } from "node:http"
 
 const OptionsSchema = Schema.Struct({
@@ -27,14 +27,35 @@ const OptionsSchema = Schema.Struct({
 export type Options = typeof OptionsSchema.Type
 
 // The token endpoint's success response (RFC 6749 section 5.1), with what this
-// client needs of it: token_type is required there; expires_in is only
-// recommended, but OpenCode renews by it.
+// client needs of it. token_type is required there. expires_in is only
+// recommended, but OpenCode renews by it; its grammar is digits (appendix A.14),
+// and some servers send it as a JSON string.
 const TokenResponse = Schema.Struct({
   access_token: Schema.NonEmptyString,
-  token_type: Schema.String,
-  expires_in: Schema.Finite.check(Schema.isGreaterThan(0)),
+  token_type: Schema.NonEmptyString,
+  expires_in: Schema.Union([Schema.Finite, Schema.FiniteFromString]).check(Schema.isGreaterThan(0)),
   refresh_token: Schema.optional(Schema.NonEmptyString),
 })
+const tokenFields: ReadonlyArray<string> = Object.keys(TokenResponse.fields)
+
+// The TokenResponse field a decode failed at: one of the schema's own field
+// names, never anything taken from the response.
+function failedField(issue: SchemaIssue.Issue): string | undefined {
+  switch (issue._tag) {
+    case "Pointer": {
+      const [field] = issue.path
+      return typeof field === "string" && tokenFields.includes(field) ? field : undefined
+    }
+    case "Composite":
+    case "AnyOf":
+      return issue.issues.map(failedField).find((field) => field !== undefined)
+    case "Filter":
+    case "Encoding":
+      return failedField(issue.issue)
+    default:
+      return undefined
+  }
+}
 
 const methodID = Integration.MethodID.make("oauth")
 const callbackPath = "/callback"
@@ -87,21 +108,22 @@ const reply = (response: ServerResponse, status: number, text: string) =>
     })
     .end(text)
 
-// Error messages quote a server's error code or token type only when it is short
-// and fits the error code's grammar (RFC 6749 appendix A.7): printable ASCII
-// without `"` or `\`. Anything else in a response never reaches a message.
-const quotable = (value: unknown): value is string =>
-  typeof value === "string" && /^[\x20-\x21\x23-\x5B\x5D-\x7E]{1,64}$/.test(value)
+// Error messages quote text from a server (an error code, its description, or a
+// token type) only when it is short and fits the grammar of OAuth's error fields
+// (RFC 6749 appendix A.7, A.8): printable ASCII without `"` or `\`. Anything
+// else in a response never reaches a message.
+const quotable = (value: unknown, max = 64): value is string =>
+  typeof value === "string" && value.length <= max && /^[\x20-\x21\x23-\x5B\x5D-\x7E]+$/.test(value)
 
 // Sends one token request (RFC 6749 section 3.2) and returns the response's JSON,
 // or fails with the HTTP status and the OAuth error code (section 5.2).
-function postTokenRequest(options: Options, grant: Record<string, string>) {
+function postTokenRequest(client: Pick<Options, "tokenEndpoint" | "clientID">, grant: Record<string, string>) {
   return Effect.tryPromise({
     try: async (signal): Promise<unknown> => {
-      const response = await fetch(options.tokenEndpoint, {
+      const response = await fetch(client.tokenEndpoint, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
-        body: new URLSearchParams({ ...grant, client_id: options.clientID }),
+        body: new URLSearchParams({ ...grant, client_id: client.clientID }),
         // The body carries a code or a refresh token: never follow it elsewhere.
         redirect: "error",
         signal: AbortSignal.any([signal, AbortSignal.timeout(tokenRequestTimeoutMs)]),
@@ -124,11 +146,18 @@ function postTokenRequest(options: Options, grant: Record<string, string>) {
 function acceptTokenResponse(body: unknown) {
   return Effect.gen(function* () {
     const tokens = yield* Schema.decodeUnknownEffect(TokenResponse)(body).pipe(
-      Effect.mapError(() => new Error("token endpoint returned no usable access_token, token_type and expires_in")),
+      Effect.mapError((error) => {
+        const field = failedField(error.issue)
+        return new Error(
+          field === undefined
+            ? "token endpoint returned no JSON token response"
+            : `token endpoint's response has no valid ${field}`,
+        )
+      }),
     )
     if (tokens.token_type.toLowerCase() !== "bearer") {
-      const type = quotable(tokens.token_type) ? `a ${tokens.token_type}` : "an unsupported"
-      return yield* Effect.fail(new Error(`token endpoint issued ${type} token; only Bearer tokens are supported`))
+      const type = quotable(tokens.token_type) ? `of type "${tokens.token_type}"` : "of an unsupported type"
+      return yield* Effect.fail(new Error(`token endpoint issued a token ${type}; only Bearer tokens are supported`))
     }
     return tokens
   })
@@ -204,10 +233,15 @@ function authorize(options: Options): Effect.Effect<IntegrationOAuthAuthorizatio
         reply(response, 400, "Sign-in state does not match")
         return
       }
-      const error = url.searchParams.get("error_description") ?? url.searchParams.get("error")
+      const error = url.searchParams.get("error")
+      const description = url.searchParams.get("error_description")
       const code = url.searchParams.get("code")
-      if (error !== null || code === null) {
-        const message = error ?? "No authorization code"
+      if (error !== null || description !== null || code === null) {
+        // The server's own words, when they are plain text like a token
+        // endpoint's error code; otherwise a fixed message.
+        const message =
+          [description, error].find((text) => quotable(text, 256)) ??
+          (error === null && description === null ? "No authorization code" : "Authorization failed")
         reply(response, 400, message)
         Effect.runFork(Deferred.fail(received, new Error(message)))
         return

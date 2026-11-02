@@ -55,6 +55,21 @@ const credentialWith = (refresh: string) =>
     expires: Date.now(),
   })
 
+// Refreshes one credential repeatedly. Each call sends a new request as long as
+// the server does not rotate the refresh token.
+function refresher(tokenURL: string) {
+  const method = registration(optionsFor(tokenURL))
+  const current = credentialWith(`refresh-${crypto.randomUUID()}`)
+  const run = () => method.refresh?.(current) ?? Effect.die("no refresh")
+  return {
+    credential: () => Effect.runPromise(run()),
+    error: async () => {
+      const error = await Effect.runPromise(Effect.flip(run()))
+      return error instanceof Error ? error.message : String(error)
+    },
+  }
+}
+
 describe("options", () => {
   test("accepts https endpoints, and plain http only to this machine", () => {
     expect(() => parseOptions(optionsFor("https://auth.example/token"))).not.toThrow()
@@ -171,6 +186,25 @@ describe("sign-in", () => {
     expect(tokens.forms).toHaveLength(0)
   })
 
+  test("shows the error code instead of a description that is not plain text", async () => {
+    using tokens = tokenEndpoint([])
+    let page: Promise<Response> | undefined
+    const error = await Effect.runPromise(
+      Effect.flip(
+        signIn(optionsFor(tokens.url), (url) => {
+          const description = encodeURIComponent("line\n\u001b[31minjected")
+          page = fetch(
+            `${redirectOf(url)}?error=access_denied&error_description=${description}&state=${url.searchParams.get("state")}`,
+          )
+          return page
+        }),
+      ),
+    )
+    expect(String(error)).toContain("access_denied")
+    expect(String(error)).not.toContain("injected")
+    expect(await (await page)?.text()).toBe("access_denied")
+  })
+
   test("answers other paths with 404 and a second callback with 409", async () => {
     using tokens = tokenEndpoint([{ status: 200, body: { access_token: "access", refresh_token: "r", expires_in: 900, token_type: "Bearer" } }])
     let other = 0
@@ -213,7 +247,7 @@ describe("sign-in", () => {
         }),
       ),
     )
-    expect(String(error)).toContain("issued a DPoP token")
+    expect(String(error)).toContain('issued a token of type "DPoP"')
     const shown = await page
     expect(shown?.status).toBe(400)
     expect(await shown?.text()).toContain("only Bearer tokens are supported")
@@ -276,35 +310,54 @@ describe("refresh", () => {
       { status: 200, body: { access_token: "lowercase", expires_in: 900, token_type: "bearer" } },
       { status: 200, body: { access_token: "uppercase", expires_in: 900, token_type: "BEARER" } },
       { status: 200, body: { access_token: "bound", expires_in: 900, token_type: "DPoP" } },
+      { status: 200, body: { access_token: "padded", expires_in: 900, token_type: "Bearer " } },
       { status: 200, body: { access_token: "untyped", expires_in: 900 } },
+      { status: 200, body: { access_token: "empty", expires_in: 900, token_type: "" } },
     ])
-    const method = registration(optionsFor(tokens.url))
-    const current = credentialWith(`refresh-${crypto.randomUUID()}`)
-    const run = () => method.refresh?.(current) ?? Effect.die("no refresh")
-    expect((await Effect.runPromise(run())).access).toBe("lowercase")
-    expect((await Effect.runPromise(run())).access).toBe("uppercase")
-    expect(String(await Effect.runPromise(Effect.flip(run())))).toContain(
-      "issued a DPoP token; only Bearer tokens are supported",
+    const refresh = refresher(tokens.url)
+    expect((await refresh.credential()).access).toBe("lowercase")
+    expect((await refresh.credential()).access).toBe("uppercase")
+    expect(await refresh.error()).toBe(
+      'token endpoint issued a token of type "DPoP"; only Bearer tokens are supported',
     )
-    expect(String(await Effect.runPromise(Effect.flip(run())))).toContain("token_type")
-    expect(tokens.forms).toHaveLength(4)
+    expect(await refresh.error()).toBe(
+      'token endpoint issued a token of type "Bearer "; only Bearer tokens are supported',
+    )
+    expect(await refresh.error()).toBe("token endpoint's response has no valid token_type")
+    expect(await refresh.error()).toBe("token endpoint's response has no valid token_type")
+    expect(tokens.forms).toHaveLength(6)
   })
 
-  test("quotes an error code or token type only when it fits the error code grammar", async () => {
+  test("accepts expires_in as a number or a string of digits, and names a bad one", async () => {
+    using tokens = tokenEndpoint([
+      { status: 200, body: { access_token: "string", expires_in: "900", token_type: "Bearer" } },
+      { status: 200, body: { access_token: "zero", expires_in: 0, token_type: "Bearer" } },
+      { status: 200, body: { access_token: "word", expires_in: "soon", token_type: "Bearer" } },
+      { status: 200, body: { access_token: "missing", token_type: "Bearer" } },
+    ])
+    const refresh = refresher(tokens.url)
+    const before = Date.now()
+    const credential = await refresh.credential()
+    expect(credential.access).toBe("string")
+    expect(credential.expires).toBeGreaterThanOrEqual(before + 900_000)
+    for (let i = 0; i < 3; i++) {
+      expect(await refresh.error()).toBe("token endpoint's response has no valid expires_in")
+    }
+  })
+
+  test("quotes an error code or token type only when it is short plain text", async () => {
     using tokens = tokenEndpoint([
       { status: 400, body: { error: 'invalid_grant"\ninjected' } },
       { status: 200, body: { access_token: "a", expires_in: 900, token_type: "x\ninjected" } },
+      { status: 200, body: { access_token: "a", expires_in: 900, token_type: "x".repeat(64) } },
       { status: 200, body: { access_token: "a", expires_in: 900, token_type: "x".repeat(65) } },
     ])
-    const method = registration(optionsFor(tokens.url))
-    const current = credentialWith(`refresh-${crypto.randomUUID()}`)
-    const run = () => Effect.runPromise(Effect.flip(method.refresh?.(current) ?? Effect.die("no refresh")))
-    const [code, type, long] = [String(await run()), String(await run()), String(await run())]
-    expect(code).toContain("token endpoint answered 400")
-    expect(code).not.toContain("injected")
-    expect(type).toContain("issued an unsupported token")
-    expect(type).not.toContain("injected")
-    expect(long).toContain("issued an unsupported token")
+    const refresh = refresher(tokens.url)
+    const unsupported = "token endpoint issued a token of an unsupported type; only Bearer tokens are supported"
+    expect(await refresh.error()).toBe("token endpoint answered 400")
+    expect(await refresh.error()).toBe(unsupported)
+    expect(await refresh.error()).toContain(`of type "${"x".repeat(64)}"`)
+    expect(await refresh.error()).toBe(unsupported)
   })
 
   test("does not follow a redirect with the refresh token", async () => {
@@ -319,13 +372,14 @@ describe("refresh", () => {
     expect(elsewhere.forms).toHaveLength(0)
   })
 
-  test("rejects a success that carries no token", async () => {
-    using tokens = tokenEndpoint([new Response("<html>login</html>", { status: 200 })])
-    const current = credentialWith(`refresh-${crypto.randomUUID()}`)
-    const error = await Effect.runPromise(
-      Effect.flip(registration(optionsFor(tokens.url)).refresh?.(current) ?? Effect.die("no refresh")),
-    )
-    expect(String(error)).toContain("no usable access_token, token_type and expires_in")
+  test("rejects a success that carries no token, and names a missing access_token", async () => {
+    using tokens = tokenEndpoint([
+      new Response("<html>login</html>", { status: 200 }),
+      { status: 200, body: { expires_in: 900, token_type: "Bearer" } },
+    ])
+    const refresh = refresher(tokens.url)
+    expect(await refresh.error()).toBe("token endpoint returned no JSON token response")
+    expect(await refresh.error()).toBe("token endpoint's response has no valid access_token")
   })
 
   test("fails with the OAuth error code, and retries on the next attempt", async () => {

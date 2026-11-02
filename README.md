@@ -131,8 +131,9 @@ The SearXNG instance must allow JSON output (`json` in `search.formats` in its
   `state`; anything else on the port is refused without ending the sign-in.
 - Concurrent renewals of one refresh token share a single request, so a server
   that revokes a reused rotated refresh token does not sign you out.
-- Error messages carry an HTTP status, the OAuth error code or a refused token
-  type, never a response body.
+- Error messages carry an HTTP status and, only when it is short plain text, the
+  server's OAuth error code, error description or refused token type; never a
+  response body.
 
 Report vulnerabilities privately, as [SECURITY.md](SECURITY.md) describes.
 
