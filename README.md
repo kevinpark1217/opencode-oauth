@@ -148,7 +148,7 @@ Report vulnerabilities privately, as [SECURITY.md](SECURITY.md) describes.
 
 ## Development
 
-See [AGENTS.md](AGENTS.md) for building, testing and contributing.
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
