@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/kevinpark1217/opencode-oauth/compare/v0.1.1...v0.2.0) (2026-11-03)
+
+
+### Features
+
+* discover the authorization server's endpoints from its issuer ([4e8d37e](https://github.com/kevinpark1217/opencode-oauth/commit/4e8d37e956678bea14af0cf00ac7c3e0dd5aa8dd))
+
 ## [0.1.1](https://github.com/kevinpark1217/opencode-oauth/compare/v0.1.0...v0.1.1) (2026-11-02)
 
 
