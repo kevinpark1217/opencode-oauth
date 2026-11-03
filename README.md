@@ -50,8 +50,7 @@ Add the plugin and the provider to your OpenCode config
       "options": {
         "provider": "my-llm",
         "clientID": "opencode",
-        "authorizationEndpoint": "https://auth.example.com/oauth2/authorize",
-        "tokenEndpoint": "https://auth.example.com/oauth2/token",
+        "issuer": "https://auth.example.com",
         "scope": "openid offline_access"
       }
     }
@@ -92,15 +91,15 @@ Pinning a version (`opencode-oauth@<version>`) turns update checks off.
 |---|---|---|
 | `provider` | yes | The key of the provider in `providers` that the plugin signs in to. |
 | `clientID` | yes | The client ID registered with the authorization server. |
-| `authorizationEndpoint` | yes | The authorization endpoint (`https`). |
-| `tokenEndpoint` | yes | The token endpoint (`https`). |
+| `issuer` | yes, or both endpoints | The authorization server's issuer, such as `https://auth.example.com/realms/example`. The plugin reads the endpoints from the server's metadata (OpenID Connect Discovery or RFC 8414). |
+| `authorizationEndpoint`, `tokenEndpoint` | instead of `issuer` | The endpoints themselves, for a server that publishes no metadata, or whose metadata names a different issuer. |
 | `scope` | yes | The scopes to request, space-separated. Include what gets you a refresh token. |
 | `port` | no | The loopback redirect's port. Unset or `0` lets the OS pick one. |
 | `authorizationParams` | no | Extra parameters for the authorization request, such as `{ "audience": "https://llm.example.com" }` for a server that picks the access token's audience from one. It cannot replace the parameters the grant sets itself. |
 | `searchURL` | no | A SearXNG search endpoint that accepts the same access token, such as `https://search.example.com/search`. See below. |
 
-Plain `http` is accepted for the endpoints and `searchURL` only on `127.0.0.1` or
-`[::1]`.
+Plain `http` is accepted for `issuer`, the endpoints and `searchURL` only on
+`127.0.0.1` or `[::1]`.
 
 ### Web search through SearXNG
 
@@ -142,11 +141,13 @@ The SearXNG instance must allow JSON output (`json` in `search.formats` in its
   `searchURL`. Neither a token request nor a search follows a redirect.
 - The redirect listener accepts only the callback carrying this attempt's
   `state`; anything else on the port is refused without ending the sign-in.
+- With `issuer`, the server's metadata must name that same issuer, and an
+  authorization response from another issuer is refused (RFC 9207).
 - Concurrent renewals of one refresh token share a single request, so a server
   that revokes a reused rotated refresh token does not sign you out.
 - Error messages carry an HTTP status and, only when it is short plain text, the
-  server's OAuth error code, error description or refused token type; never a
-  response body.
+  server's OAuth error code, error description, refused token type or metadata
+  issuer; never a response body.
 
 Report vulnerabilities privately, as [SECURITY.md](SECURITY.md) describes.
 
