@@ -8,7 +8,7 @@ const isModel = Schema.is(Schema.Struct({ id: Schema.NonEmptyString }))
 
 const listTimeoutMs = 10_000
 
-export function listModels(baseURL: string, accessToken: string) {
+function listModels(baseURL: string, accessToken: string) {
   return getJSON(new URL(`${baseURL.replace(/\/+$/, "")}/models`), accessToken, "/models", listTimeoutMs).pipe(
     Effect.flatMap((body) =>
       Schema.decodeUnknownEffect(ModelList)(body).pipe(Effect.mapError(() => new Error("/models returned no model list"))),

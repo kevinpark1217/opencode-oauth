@@ -5,6 +5,7 @@ import type {
 } from "@opencode/plugin/effect/integration"
 import { Deferred, Effect, Schema, type SchemaIssue, SchemaTransformation, type Scope } from "effect"
 import { createServer, type ServerResponse } from "node:http"
+import { toError } from "./fetch.js"
 
 const OptionsSchema = Schema.Struct({
   provider: Schema.NonEmptyString,
@@ -104,12 +105,6 @@ export function parseOptions(input: unknown): Options {
 
 // A hung token endpoint must not hold every model call behind a shared refresh.
 const tokenRequestTimeoutMs = 30_000
-const asError = (cause: unknown) =>
-  cause instanceof Error && cause.name === "TimeoutError"
-    ? new Error(`token endpoint did not answer within ${tokenRequestTimeoutMs / 1000} s`)
-    : cause instanceof Error
-      ? cause
-      : new Error(String(cause))
 
 const base64url = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64url")
 const randomToken = () => base64url(crypto.getRandomValues(new Uint8Array(32)))
@@ -168,9 +163,7 @@ function discover(issuer: string) {
         throw new Error(`no authorization server metadata for ${issuer}`)
       },
       catch: (cause) =>
-        cause instanceof Error && cause.name === "TimeoutError"
-          ? new Error(`authorization server metadata for ${issuer} did not answer within ${discoveryTimeoutMs / 1000} s`)
-          : asError(cause),
+        toError(cause, `authorization server metadata for ${issuer} did not answer within ${discoveryTimeoutMs / 1000} s`),
     })
     const metadata = yield* Schema.decodeUnknownEffect(Metadata)(found.body).pipe(
       Effect.mapError((error) => {
@@ -224,7 +217,7 @@ function serverFor(options: Options): () => Effect.Effect<Server, Error> {
           pending = undefined
           throw error
         })),
-      catch: asError,
+      catch: (cause) => toError(cause),
     })
 }
 
@@ -246,7 +239,7 @@ function postTokenRequest(client: Client, grant: Record<string, string>) {
       }
       return json
     },
-    catch: asError,
+    catch: (cause) => toError(cause, `token endpoint did not answer within ${tokenRequestTimeoutMs / 1000} s`),
   })
 }
 
@@ -325,7 +318,7 @@ function refreshToken(clientID: string, server: () => Effect.Effect<Server, Erro
       }, forget)
       return next
     },
-    catch: asError,
+    catch: (cause) => toError(cause),
   })
 }
 

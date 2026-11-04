@@ -15,7 +15,7 @@ const isResult = Schema.is(SearxngResult)
 // SearXNG prints dates without a zone; read as UTC, not this machine's time.
 const parseDate = (value: string) => Date.parse(/(Z|[+-]\d\d:?\d\d)$/.test(value) ? value : `${value}Z`)
 
-export interface SearchResult {
+interface SearchResult {
   readonly url: string
   readonly title?: string
   readonly content?: string
