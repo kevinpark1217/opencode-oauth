@@ -4,8 +4,6 @@ import { discoverModels } from "./models.js"
 import { parseOptions, registration } from "./oauth.js"
 import { search } from "./search.js"
 
-export type { Options } from "./oauth.js"
-
 export default Plugin.define({
   id: "opencode-oauth",
   effect: (ctx) =>

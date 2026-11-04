@@ -1,6 +1,6 @@
 # Contributing
 
-opencode-oauth is an OpenCode 2 plugin: OAuth 2.0 sign-in (authorization code with PKCE on a loopback redirect) for an OpenAI-compatible provider, plus optional SearXNG web search. Code is in `src/`, tests in `test/`, user documentation in `README.md`.
+opencode-oauth is an OpenCode 2 plugin: OAuth 2.0 sign-in (authorization code with PKCE on a loopback redirect) for an OpenAI-compatible provider, plus the provider's models and optional SearXNG web search. Code is in `src/`, tests in `test/`, user documentation in `README.md`.
 
 ## Reporting a bug or asking for a feature
 

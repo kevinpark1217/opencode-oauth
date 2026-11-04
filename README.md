@@ -4,8 +4,8 @@
 
 An [OpenCode](https://opencode.ai) plugin that signs in to an OpenAI-compatible
 model provider with OAuth 2.0, for a provider whose API sits behind your own
-identity provider. It can also add web search through a
-[SearXNG](https://docs.searxng.org) instance behind the same sign-in.
+identity provider, and adds the models it lists. It can also add web search
+through a [SearXNG](https://docs.searxng.org) instance behind the same sign-in.
 
 OpenCode opens the browser for the authorization code grant with PKCE
 ([RFC 7636](https://www.rfc-editor.org/rfc/rfc7636)) on a loopback redirect
@@ -17,8 +17,7 @@ bearer. Nothing in the plugin is specific to one identity provider.
 
 ## Requirements
 
-- **OpenCode 2.** The plugin uses the v2 plugin API (`@opencode/plugin` 2.0.32 or
-  later); OpenCode 1.x does not load it.
+- **OpenCode 2.0.32 or later.** OpenCode 1.x does not load the plugin.
 - **An authorization server** (identity provider) that your browser and OpenCode
   can both reach. It need not be on the internet: a LAN or a VPN is enough, since
   the server never connects to your machine. It needs a client that:
@@ -28,10 +27,9 @@ bearer. Nothing in the plugin is specific to one identity provider.
     follows RFC 8252 section 7.3 accepts a loopback redirect on any port, so
     `port` can stay unset; otherwise register a fixed port and set `port` to it;
   - is issued refresh tokens, often by granting it the `offline_access` scope;
-  - is issued Bearer access tokens: token responses must include `token_type`
-    `Bearer` (in any case) and `expires_in`. A token of another type, such as a
-    DPoP-bound one, is refused, because OpenCode sends the token as a Bearer
-    token.
+  - is issued Bearer access tokens, with `token_type` and `expires_in` in token
+    responses. OpenCode sends the token as a Bearer token, so another type, such
+    as a DPoP-bound token, is refused.
 - **A provider that accepts the access token** as `Authorization: Bearer …`, such
   as an OpenAI-compatible server behind a gateway that validates the token (for
   example oauth2-proxy with `--skip-jwt-bearer-tokens`).
@@ -69,8 +67,9 @@ Then sign in once, with `/connect` in the TUI or `opencode auth login my-llm`.
 The browser opens your identity provider, and after you sign in the tab says so.
 OpenCode renews the token on its own from then on.
 
-The plugin then adds the models that the provider's `/models` lists. To name a
-model or set its limits, list it under the provider's `models`; set `model` to
+The plugin then adds the models that the provider's `/models` lists, named by
+their IDs, with OpenCode's default limits and no reasoning-effort variants. To
+change those for a model, list it under the provider's `models`; set `model` to
 make one your default.
 
 Each plugin entry signs in to one provider, and replaces that provider's API key
@@ -97,7 +96,7 @@ Pinning a version (`opencode-oauth@<version>`) turns update checks off.
 | `port` | no | The loopback redirect's port. Unset or `0` lets the OS pick one. |
 | `authorizationParams` | no | Extra parameters for the authorization request, such as `{ "audience": "https://llm.example.com" }` for a server that picks the access token's audience from one. It cannot replace the parameters the grant sets itself. |
 | `searchURL` | no | A SearXNG search endpoint that accepts the same access token, such as `https://search.example.com/search`. See below. |
-| `discoverModels` | no | Unless `false`, adds the models that the provider's `/models` lists, shortly after startup and sign-in. A model the config doesn't list gets its ID as its name, OpenCode's default limits and no reasoning-effort variants; list it in the config for those. |
+| `discoverModels` | no | `false` stops the plugin adding the models that the provider's `/models` lists. |
 
 Plain `http` is accepted for `issuer`, the endpoints and `searchURL` only on
 `127.0.0.1` or `[::1]`, and models are listed only from a provider `baseURL`

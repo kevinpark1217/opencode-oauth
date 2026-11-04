@@ -1,7 +1,7 @@
 {
   "name": "opencode-oauth",
   "version": "0.2.0",
-  "description": "OpenCode plugin: sign in to an OpenAI-compatible provider with OAuth 2.0 (authorization code with PKCE, refresh tokens), and search the web through a SearXNG behind the same sign-in",
+  "description": "OpenCode plugin: sign in to an OpenAI-compatible provider with OAuth 2.0 and PKCE, add its models, and search the web through SearXNG behind the same sign-in",
   "keywords": [
     "opencode",
     "opencode-plugin",
@@ -35,7 +35,6 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "bun test",
     "prepack": "bun run build"
   },
   "peerDependencies": {
