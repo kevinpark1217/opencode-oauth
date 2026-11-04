@@ -1,12 +1,26 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
-  "packageRules": [
-    {
-      "description": "OpenCode hands plugins its own effect and runs them on its own Bun: bump these together, by hand (CONTRIBUTING.md, Updating dependencies).",
-      "matchPackageNames": ["@opencode/plugin", "effect", "@types/bun", "bun"],
-      "groupName": "OpenCode host",
-      "dependencyDashboardApproval": true
+  "customDatasources": {
+    "opencode-effect": {
+      "defaultRegistryUrlTemplate": "https://registry.npmjs.org/@opencode/plugin/latest",
+      "transformTemplates": ["{\"releases\": [{\"version\": dependencies.effect}]}"]
     }
+  },
+  "customManagers": [
+    {
+      "description": "The \\d skips the effect peer range.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^package\\.json$/"],
+      "matchStrings": ["\"(?<depName>effect)\": \"(?<currentValue>\\d[^\"]*)\""],
+      "datasourceTemplate": "custom.opencode-effect",
+      "versioningTemplate": "npm"
+    }
+  ],
+  "packageRules": [
+    { "matchManagers": ["bun"], "matchPackageNames": ["effect"], "enabled": false },
+    { "matchDepTypes": ["peerDependencies"], "enabled": false },
+    { "matchPackageNames": ["@opencode/plugin", "effect"], "groupName": "OpenCode host", "separateMajorMinor": false },
+    { "matchPackageNames": ["bun", "@types/bun"], "groupName": "Bun" }
   ]
 }
