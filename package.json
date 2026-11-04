@@ -51,9 +51,9 @@
     }
   },
   "devDependencies": {
-    "@opencode/plugin": "2.1.4",
+    "@opencode/plugin": "2.2.5",
     "@types/bun": "1.4.4",
-    "effect": "4.0.1",
+    "effect": "4.0.6",
     "typescript": "7.0.2"
   }
 }
