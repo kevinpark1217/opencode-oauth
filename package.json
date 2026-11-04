@@ -1,6 +1,6 @@
 {
   "name": "opencode-oauth",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "OpenCode plugin: sign in to an OpenAI-compatible provider with OAuth 2.0 and PKCE, add its models, and search the web through SearXNG behind the same sign-in",
   "keywords": [
     "opencode",
