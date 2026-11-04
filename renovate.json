@@ -9,7 +9,7 @@
   },
   "customManagers": [
     {
-      "description": "The effect devDependency, at the version the latest @opencode/plugin depends on. The \\d skips the peer range.",
+      "description": "The \\d skips the effect peer range.",
       "customType": "regex",
       "managerFilePatterns": ["/^package\\.json$/"],
       "matchStrings": ["\"(?<depName>effect)\": \"(?<currentValue>\\d[^\"]*)\""],
@@ -18,26 +18,9 @@
     }
   ],
   "packageRules": [
-    {
-      "description": "The custom manager above sets effect.",
-      "matchManagers": ["bun"],
-      "matchPackageNames": ["effect"],
-      "enabled": false
-    },
-    {
-      "description": "Peer ranges change by hand (CONTRIBUTING.md, Updating dependencies).",
-      "matchDepTypes": ["peerDependencies"],
-      "enabled": false
-    },
-    {
-      "description": "One pull request for the plugin API and effect, even across major versions.",
-      "matchPackageNames": ["@opencode/plugin", "effect"],
-      "groupName": "OpenCode host",
-      "separateMajorMinor": false
-    },
-    {
-      "matchPackageNames": ["bun", "@types/bun"],
-      "groupName": "Bun"
-    }
+    { "matchManagers": ["bun"], "matchPackageNames": ["effect"], "enabled": false },
+    { "matchDepTypes": ["peerDependencies"], "enabled": false },
+    { "matchPackageNames": ["@opencode/plugin", "effect"], "groupName": "OpenCode host", "separateMajorMinor": false },
+    { "matchPackageNames": ["bun", "@types/bun"], "groupName": "Bun" }
   ]
 }
