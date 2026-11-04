@@ -28,7 +28,7 @@ To try a checkout in OpenCode, run `bun pm pack` and set the plugin's `package` 
 
 ## Updating dependencies
 
-OpenCode hands plugins its own `effect` and runs them on its own Bun, so `@opencode/plugin`, `effect`, `@types/bun` and `packageManager` move together: `effect` and `@types/bun` to the versions `@opencode/plugin` uses, and Bun to that OpenCode release's `packageManager`. Renovate's "OpenCode host" pull request does this for each OpenCode release. Raise the `@opencode/plugin` peer range in `package.json`, and the minimum in README's Requirements, only when the code needs a newer plugin API.
+OpenCode hands plugins its own `effect`, so the `effect` devDependency stays at the version `@opencode/plugin` depends on: Renovate's "OpenCode host" pull request moves the two together. Bun and `@types/bun` follow Bun's releases, so CI may run a slightly newer Bun than the one OpenCode runs plugins on. Renovate leaves the peer ranges alone: raise one, and the minimum in README's Requirements, only when the code needs a newer version, and widen it once a new major version works.
 
 ## Opening a pull request
 
