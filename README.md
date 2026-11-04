@@ -59,19 +59,19 @@ Add the plugin and the provider to your OpenCode config
     "my-llm": {
       "name": "My LLM",
       "package": "@opencode/ai/providers/openai-compatible",
-      "settings": { "baseURL": "https://llm.example.com/v1" },
-      "models": {
-        "my-model": { "name": "My model" }
-      }
+      "settings": { "baseURL": "https://llm.example.com/v1" }
     }
-  },
-  "model": "my-llm/my-model"
+  }
 }
 ```
 
 Then sign in once, with `/connect` in the TUI or `opencode auth login my-llm`.
 The browser opens your identity provider, and after you sign in the tab says so.
 OpenCode renews the token on its own from then on.
+
+The plugin then adds the models that the provider's `/models` lists. To name a
+model or set its limits, list it under the provider's `models`; set `model` to
+make one your default.
 
 Each plugin entry signs in to one provider, and replaces that provider's API key
 method with the sign-in.
