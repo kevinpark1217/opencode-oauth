@@ -16,6 +16,7 @@ const OptionsSchema = Schema.Struct({
   port: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 65535 }))),
   authorizationParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   searchURL: Schema.optional(Schema.NonEmptyString),
+  discoverModels: Schema.optional(Schema.Boolean),
 })
 export type Options = typeof OptionsSchema.Type
 
@@ -75,7 +76,7 @@ const reservedParams = [
 ]
 
 // Codes and tokens cross these; plain http is accepted only to this machine.
-function secure(value: string) {
+export function secure(value: string) {
   const url = URL.parse(value)
   return url?.protocol === "https:" || (url?.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "[::1]"))
 }

@@ -1,4 +1,5 @@
 import { Effect, Schema } from "effect"
+import { getJSON } from "./fetch.js"
 
 const SearxngResponse = Schema.Struct({ results: Schema.Array(Schema.Unknown) })
 
@@ -26,27 +27,10 @@ const maxResults = 8
 const searchTimeoutMs = 25_000
 
 export function search(searchURL: string, query: string, accessToken: string) {
-  return Effect.tryPromise({
-    try: async (signal) => {
-      const url = new URL(searchURL)
-      url.searchParams.set("q", query)
-      url.searchParams.set("format", "json")
-      const response = await fetch(url, {
-        headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
-        // The token goes to searchURL only.
-        redirect: "error",
-        signal: AbortSignal.any([signal, AbortSignal.timeout(searchTimeoutMs)]),
-      })
-      if (!response.ok) throw new Error(`search answered ${response.status}`)
-      return (await response.json().catch(() => undefined)) as unknown
-    },
-    catch: (cause) =>
-      cause instanceof Error && cause.name === "TimeoutError"
-        ? new Error(`search did not answer within ${searchTimeoutMs / 1000} s`)
-        : cause instanceof Error
-          ? cause
-          : new Error(String(cause)),
-  }).pipe(
+  const url = new URL(searchURL)
+  url.searchParams.set("q", query)
+  url.searchParams.set("format", "json")
+  return getJSON(url, accessToken, "search", searchTimeoutMs).pipe(
     Effect.flatMap((body) =>
       Schema.decodeUnknownEffect(SearxngResponse)(body).pipe(
         Effect.mapError(() => new Error("search returned no usable results")),
