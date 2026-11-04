@@ -158,21 +158,22 @@ describe("model discovery", () => {
     expires: Date.now() + 60_000,
   })
 
-  // Runs the plugin against a /models answered by `respond`, with a model chain that holds one configured model.
-  // `models()` lists the provider's models after OpenCode's last rebuild; `added()` those discovery created.
+  // Runs the plugin against a /models answered by `respond`, with a provider that has one configured model.
+  // Like OpenCode, loading or moving the provider rebuilds the models and publishes provider.updated.
   function discover(
     respond: (path: string) => Response | Promise<Response>,
     body: (harness: {
       // Each request also records the models OpenCode showed when it arrived.
       readonly requests: { readonly path: string; readonly authorization: string | null; readonly showing: string[] }[]
-      readonly models: () => string[]
-      readonly added: () => Map<string, Model.Info>
       // The signed-in account and the models OpenCode showed after each reload.
       readonly history: { readonly account: string; readonly models: string[] }[]
+      readonly models: () => string[]
+      readonly added: () => Map<string, Model.Info>
       readonly reloaded: (count: number) => Effect.Effect<void>
       readonly switchTo: (connection: ReturnType<typeof signedIn>) => Effect.Effect<void>
-      readonly loadProvider: () => void
-      readonly moveProvider: (path: string) => void
+      readonly providerUpdated: () => Effect.Effect<void>
+      readonly loadProvider: () => Effect.Effect<void>
+      readonly moveProvider: (path: string) => Effect.Effect<void>
     }) => Effect.Effect<void>,
     setup: { readonly providerLoaded?: boolean; readonly baseURL?: string } = {},
   ) {
@@ -192,18 +193,15 @@ describe("model discovery", () => {
     let transform: ((editor: ModelEditor) => void) | undefined
     const history: { account: string; models: string[] }[] = []
     const models = () => ["configured", ...added.keys()]
-    const record = {
-      provider: { id: providerID, settings: { baseURL: setup.baseURL ?? `http://127.0.0.1:${server.port}/v1/` } },
-    }
+    const provider = { id: providerID, settings: { baseURL: setup.baseURL ?? `http://127.0.0.1:${server.port}/v1/` } }
     const editor = {
-      get: (provider: string, id: string) =>
-        provider === providerID && id === "configured" ? { id } : added.get(id),
-      update: (provider: string, id: string, update: (model: Model.Info) => void) => {
-        const model = structuredClone(Model.Info.default(Provider.ID.make(provider), Model.ID.make(id)))
-        update(model)
-        added.set(id, model)
+      get: (id: string, model: string) => (id === providerID && model === "configured" ? { id: model } : added.get(model)),
+      update: (id: string, model: string, update: (draft: Model.Info) => void) => {
+        const draft = structuredClone(Model.Info.default(Provider.ID.make(id), Model.ID.make(model)))
+        update(draft)
+        added.set(model, draft)
       },
-      provider: { get: (id: string) => (providerLoaded && id === providerID ? record : undefined) },
+      provider: { get: (id: string) => (providerLoaded && id === providerID ? { provider } : undefined) },
     } as unknown as ModelEditor
     const rebuild = () => {
       added = new Map()
@@ -212,12 +210,16 @@ describe("model discovery", () => {
     return Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const switched = yield* Queue.unbounded<{ type: string; data: { integrationID: string } }>()
+          const events = yield* Queue.unbounded<{ type: string; data: { integrationID?: string } }>()
           const ctx = {
             options: { ...options, discoverModels: undefined },
             integration: {
               transform: () => Effect.succeed({ dispose: Effect.void }),
               connection: { active: () => Effect.sync(() => active), resolve: () => Effect.succeed(credential) },
+            },
+            provider: {
+              get: () =>
+                providerLoaded ? Effect.succeed({ data: provider }) : Effect.fail(new Error("Provider not found")),
             },
             model: {
               transform: (callback: (editor: ModelEditor) => void) => {
@@ -231,14 +233,15 @@ describe("model discovery", () => {
                   history.push({ account: active.id, models: models() })
                 }),
             },
-            event: { subscribe: () => Stream.fromQueue(switched) },
+            event: { subscribe: () => Stream.fromQueue(events) },
           }
           yield* plugin.effect(ctx as unknown as Context)
+          const providerUpdated = () => Queue.offer(events, { type: "provider.updated", data: {} })
           yield* body({
             requests,
+            history,
             models,
             added: () => added,
-            history,
             reloaded: (count) =>
               Effect.gen(function* () {
                 while (history.length < count) yield* Effect.sleep("5 millis")
@@ -246,15 +249,18 @@ describe("model discovery", () => {
             switchTo: (connection) =>
               Effect.gen(function* () {
                 active = connection
-                yield* Queue.offer(switched, { type: "credential.switched", data: { integrationID: providerID } })
+                yield* Queue.offer(events, { type: "credential.switched", data: { integrationID: providerID } })
               }),
+            providerUpdated,
             loadProvider: () => {
               providerLoaded = true
               rebuild()
+              return providerUpdated()
             },
             moveProvider: (path) => {
-              record.provider.settings.baseURL = `http://127.0.0.1:${server.port}${path}`
+              provider.settings.baseURL = `http://127.0.0.1:${server.port}${path}`
               rebuild()
+              return providerUpdated()
             },
           })
         }),
@@ -263,6 +269,7 @@ describe("model discovery", () => {
   }
 
   const listing = (...ids: unknown[]) => Response.json({ object: "list", data: ids })
+  const unavailable = () => new Response("unavailable", { status: 503 })
 
   test("adds the models the config doesn't list, as if the config listed them by ID", () =>
     discover(
@@ -293,12 +300,42 @@ describe("model discovery", () => {
         Effect.gen(function* () {
           yield* Effect.sleep("20 millis")
           expect(requests).toEqual([])
-          loadProvider()
+          yield* loadProvider()
           yield* reloaded(1)
           expect(models()).toEqual(["configured", "discovered"])
         }),
       { providerLoaded: false },
     ))
+
+  test("lists once per account, however often the providers update", () =>
+    discover(
+      () => listing({ id: "discovered" }),
+      ({ requests, reloaded, switchTo, providerUpdated }) =>
+        Effect.gen(function* () {
+          yield* reloaded(1)
+          yield* providerUpdated()
+          yield* providerUpdated()
+          yield* switchTo(signedIn("second"))
+          yield* reloaded(3)
+          expect(requests.map((request) => request.path)).toEqual(["/v1/models", "/v1/models"])
+        }),
+    ))
+
+  test("never shows one account's models to another", () => {
+    let calls = 0
+    return discover(
+      () => (++calls === 1 ? listing({ id: "discovered" }) : unavailable()),
+      ({ requests, models, reloaded, switchTo }) =>
+        Effect.gen(function* () {
+          yield* reloaded(1)
+          expect(models()).toEqual(["configured", "discovered"])
+          yield* switchTo(signedIn("second"))
+          while (requests.length < 2) yield* Effect.sleep("5 millis")
+          expect(requests[1]!.showing).toEqual(["configured"])
+          expect(models()).toEqual(["configured"])
+        }),
+    )
+  })
 
   test("drops a list that arrives after the account switched", () => {
     let release = () => {}
@@ -311,7 +348,7 @@ describe("model discovery", () => {
           while (requests.length < 1) yield* Effect.sleep("5 millis")
           yield* switchTo(signedIn("second"))
           release()
-          yield* reloaded(2)
+          yield* reloaded(1)
           expect(history.filter((entry) => entry.models.includes("first-model"))).toEqual([])
           expect(models()).toEqual(["configured", "second-model"])
         }),
@@ -325,7 +362,7 @@ describe("model discovery", () => {
         Effect.gen(function* () {
           yield* reloaded(1)
           expect(models()).toEqual(["configured", "old-model"])
-          moveProvider("/v2")
+          yield* moveProvider("/v2")
           expect(models()).toEqual(["configured"])
           yield* reloaded(3)
           expect(models()).toEqual(["configured", "new-model"])
@@ -345,9 +382,9 @@ describe("model discovery", () => {
     try {
       await discover(
         () => listing({ id: "discovered" }),
-        ({ models, reloaded }) =>
+        ({ models }) =>
           Effect.gen(function* () {
-            yield* reloaded(1)
+            yield* Effect.sleep("50 millis")
             expect(fetched).toEqual([])
             expect(models()).toEqual(["configured"])
           }),
@@ -356,25 +393,5 @@ describe("model discovery", () => {
     } finally {
       globalThis.fetch = original
     }
-  })
-
-  test("keeps the list through a failure, but never shows it to another account", () => {
-    let healthy = true
-    return discover(
-      () => (healthy ? listing({ id: "discovered" }) : new Response("unavailable", { status: 503 })),
-      ({ requests, models, reloaded, switchTo }) =>
-        Effect.gen(function* () {
-          yield* reloaded(1)
-          healthy = false
-          yield* switchTo(signedIn("first"))
-          yield* reloaded(2)
-          expect(models()).toEqual(["configured", "discovered"])
-          yield* switchTo(signedIn("second"))
-          while (requests.length < 3) yield* Effect.sleep("5 millis")
-          expect(requests[2]!.showing).toEqual(["configured"])
-          yield* reloaded(4)
-          expect(models()).toEqual(["configured"])
-        }),
-    )
   })
 })
