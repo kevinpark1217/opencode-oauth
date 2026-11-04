@@ -19,7 +19,7 @@ const options: Options = {
 type Context = Parameters<typeof plugin.effect>[0]
 
 describe("plugin", () => {
-  test("registers one OAuth method for the provider and drops the key method", async () => {
+  test("registers one OAuth method for the provider, the same one on every rerun, and drops the key method", async () => {
     const updates: IntegrationMethodRegistration[] = []
     const removals: unknown[] = []
     const editor = {
@@ -33,26 +33,6 @@ describe("plugin", () => {
       integration: {
         transform: (callback: (editor: IntegrationEditor) => void) => {
           callback(editor)
-          return Effect.succeed({ dispose: Effect.void })
-        },
-      },
-    }
-    await Effect.runPromise(Effect.scoped(plugin.effect(ctx as unknown as Context)))
-    expect(updates).toHaveLength(1)
-    expect(updates[0]).toMatchObject({ integrationID: "example", method: { id: "oauth", type: "oauth" } })
-    expect(removals).toEqual([["example", { type: "key" }]])
-  })
-
-  test("keeps one registration when OpenCode reruns the transform", async () => {
-    const updates: IntegrationMethodRegistration[] = []
-    const editor = {
-      method: { update: (input: IntegrationMethodRegistration) => updates.push(input), remove: () => undefined },
-    } as unknown as IntegrationEditor
-    const ctx = {
-      options,
-      integration: {
-        transform: (callback: (editor: IntegrationEditor) => void) => {
-          callback(editor)
           callback(editor)
           return Effect.succeed({ dispose: Effect.void })
         },
@@ -60,7 +40,12 @@ describe("plugin", () => {
     }
     await Effect.runPromise(Effect.scoped(plugin.effect(ctx as unknown as Context)))
     expect(updates).toHaveLength(2)
+    expect(updates[0]).toMatchObject({ integrationID: "example", method: { id: "oauth", type: "oauth" } })
     expect(updates[1]).toBe(updates[0])
+    expect(removals).toEqual([
+      ["example", { type: "key" }],
+      ["example", { type: "key" }],
+    ])
   })
 
   test("does not load with invalid options, and says why", async () => {

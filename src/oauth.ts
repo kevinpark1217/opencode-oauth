@@ -54,11 +54,7 @@ function failedField(issue: SchemaIssue.Issue, fields: ReadonlyArray<string>): s
       return typeof field === "string" && fields.includes(field) ? field : undefined
     }
     case "Composite":
-    case "AnyOf":
       return issue.issues.map((inner) => failedField(inner, fields)).find((field) => field !== undefined)
-    case "Filter":
-    case "Encoding":
-      return failedField(issue.issue, fields)
     default:
       return undefined
   }
@@ -217,7 +213,7 @@ function serverFor(options: Options): () => Effect.Effect<Server, Error> {
           pending = undefined
           throw error
         })),
-      catch: (cause) => toError(cause),
+      catch: toError,
     })
 }
 
@@ -318,7 +314,7 @@ function refreshToken(clientID: string, server: () => Effect.Effect<Server, Erro
       }, forget)
       return next
     },
-    catch: (cause) => toError(cause),
+    catch: toError,
   })
 }
 

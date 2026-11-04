@@ -17,8 +17,7 @@ bearer. Nothing in the plugin is specific to one identity provider.
 
 ## Requirements
 
-- **OpenCode 2.** The plugin uses the v2 plugin API (`@opencode/plugin` 2.0.32 or
-  later); OpenCode 1.x does not load it.
+- **OpenCode 2.0.32 or later.** OpenCode 1.x does not load the plugin.
 - **An authorization server** (identity provider) that your browser and OpenCode
   can both reach. It need not be on the internet: a LAN or a VPN is enough, since
   the server never connects to your machine. It needs a client that:
