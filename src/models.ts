@@ -24,7 +24,7 @@ export function discoverModels(ctx: Plugin.Context, providerID: string) {
     let listedFor: string | undefined
 
     // OpenCode applies the config's providers after plugins' provider transforms, so models are added in the model
-    // chain. A new model starts as if the config listed it by ID; a model the config lists stays as written.
+    // chain. A new model gets OpenCode's model defaults; a model the config lists stays as written.
     yield* ctx.model.transform((models) => {
       if (!found || found.baseURL !== models.provider.get(providerID)?.provider.settings?.baseURL) return
       for (const id of found.ids) if (!models.get(providerID, id)) models.update(providerID, id, () => {})
