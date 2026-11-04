@@ -30,6 +30,8 @@ To try a checkout in OpenCode, run `bun pm pack` and set the plugin's `package` 
 
 OpenCode hands plugins its own `effect` and runs them on its own Bun, so `@opencode/plugin`, `effect`, `@types/bun` and `packageManager` move together: `effect` to the version `@opencode/plugin` depends on, Bun to the one that OpenCode release compiles in. Raise the `@opencode/plugin` peer range in `package.json`, and the minimum in README's Requirements, only when the code needs a newer plugin API.
 
+Keep both peers optional in `peerDependenciesMeta`: a required peer makes npm put a copy, with all its dependencies, into every user's install, and OpenCode refuses to load it anyway.
+
 ## Opening a pull request
 
 Every change goes through a pull request, and CI must pass. Keep each one to a single change, and fill in the template.
