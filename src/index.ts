@@ -1,5 +1,6 @@
 import { Plugin } from "@opencode/plugin/effect"
 import { Effect } from "effect"
+import { discoverModels } from "./models.js"
 import { parseOptions, registration } from "./oauth.js"
 import { search } from "./search.js"
 
@@ -17,6 +18,7 @@ export default Plugin.define({
         editor.method.update(method)
         editor.method.remove(options.provider, { type: "key" })
       })
+      if (options.discoverModels !== false) yield* discoverModels(ctx, options.provider)
       const searchURL = options.searchURL
       if (searchURL === undefined) return
       // Not made the default: a plugin's choice would hide the one the user makes

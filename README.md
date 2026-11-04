@@ -97,9 +97,11 @@ Pinning a version (`opencode-oauth@<version>`) turns update checks off.
 | `port` | no | The loopback redirect's port. Unset or `0` lets the OS pick one. |
 | `authorizationParams` | no | Extra parameters for the authorization request, such as `{ "audience": "https://llm.example.com" }` for a server that picks the access token's audience from one. It cannot replace the parameters the grant sets itself. |
 | `searchURL` | no | A SearXNG search endpoint that accepts the same access token, such as `https://search.example.com/search`. See below. |
+| `discoverModels` | no | Unless `false`, adds the models that the provider's `/models` lists, at startup and at sign-in. A model the config doesn't list gets its ID as its name and OpenCode's default limits; list it to change them. |
 
 Plain `http` is accepted for `issuer`, the endpoints and `searchURL` only on
-`127.0.0.1` or `[::1]`.
+`127.0.0.1` or `[::1]`, and models are listed only from a provider `baseURL`
+that follows the same rule.
 
 ### Web search through SearXNG
 
@@ -137,8 +139,9 @@ The SearXNG instance must allow JSON output (`json` in `search.formats` in its
 
 ## Security
 
-- Tokens go only to the token endpoint, the provider (sent by OpenCode) and
-  `searchURL`. Neither a token request nor a search follows a redirect.
+- Tokens go only to the token endpoint, the provider (by OpenCode, and by the
+  plugin to list models) and `searchURL`. None of the plugin's requests follows
+  a redirect.
 - The redirect listener accepts only the callback carrying this attempt's
   `state`; anything else on the port is refused without ending the sign-in.
 - With `issuer`, the server's metadata must name that same issuer, and an

@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test"
-import { Credential, Integration } from "@opencode/plugin/effect"
+import { Credential, Integration, Model, Provider } from "@opencode/plugin/effect"
 import type { IntegrationEditor, IntegrationMethodRegistration } from "@opencode/plugin/effect/integration"
+import type { ModelEditor } from "@opencode/plugin/effect/model"
 import type { WebSearchDefinition, WebSearchEditor } from "@opencode/plugin/effect/websearch"
-import { Effect } from "effect"
+import { Effect, Queue, Stream } from "effect"
 import plugin from "../src/index.js"
 import type { Options } from "../src/oauth.js"
 
@@ -12,6 +13,7 @@ const options: Options = {
   authorizationEndpoint: "https://auth.example/authorize",
   tokenEndpoint: "https://auth.example/token",
   scope: "openid offline_access",
+  discoverModels: false,
 }
 
 type Context = Parameters<typeof plugin.effect>[0]
@@ -142,5 +144,200 @@ describe("web search", () => {
     const { added, selection } = await registerSearch(options, undefined)
     expect(added).toEqual([])
     expect(selection).toBeUndefined()
+  })
+})
+
+describe("model discovery", () => {
+  const providerID = Provider.ID.make("example")
+  const signedIn = (id: string) => ({ type: "credential", id, label: id, method: "oauth" }) as const
+  const credential = Credential.OAuth.make({
+    type: "oauth",
+    methodID: Integration.MethodID.make("oauth"),
+    access: "access-token",
+    refresh: "refresh",
+    expires: Date.now() + 60_000,
+  })
+
+  // Runs the plugin against a /models answered by `respond`, with a model chain that holds one configured model.
+  // `models()` lists the provider's models after OpenCode's last rebuild; `added()` those discovery created.
+  function discover(
+    respond: () => Response | Promise<Response>,
+    body: (harness: {
+      // Each request also records the models OpenCode showed when it arrived.
+      readonly requests: { readonly path: string; readonly authorization: string | null; readonly showing: string[] }[]
+      readonly models: () => string[]
+      readonly added: () => Map<string, Model.Info>
+      readonly reloaded: (count: number) => Effect.Effect<void>
+      readonly switchTo: (connection: ReturnType<typeof signedIn>) => Effect.Effect<void>
+      readonly loadProvider: () => void
+    }) => Effect.Effect<void>,
+    setup: { readonly providerLoaded?: boolean; readonly baseURL?: string } = {},
+  ) {
+    const requests: { path: string; authorization: string | null; showing: string[] }[] = []
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (request) => {
+        requests.push({
+          path: new URL(request.url).pathname,
+          authorization: request.headers.get("authorization"),
+          showing: models(),
+        })
+        return respond()
+      },
+    })
+    let providerLoaded = setup.providerLoaded ?? true
+    let active = signedIn("first")
+    let added = new Map<string, Model.Info>()
+    let transform: ((editor: ModelEditor) => void) | undefined
+    let reloads = 0
+    const models = () => ["configured", ...added.keys()]
+    const record = {
+      provider: { id: providerID, settings: { baseURL: setup.baseURL ?? `http://127.0.0.1:${server.port}/v1/` } },
+    }
+    const editor = {
+      get: (provider: string, id: string) =>
+        provider === providerID && id === "configured" ? { id } : added.get(id),
+      update: (provider: string, id: string, update: (model: Model.Info) => void) => {
+        const model = structuredClone(Model.Info.default(Provider.ID.make(provider), Model.ID.make(id)))
+        update(model)
+        added.set(id, model)
+      },
+      provider: { get: (id: string) => (providerLoaded && id === providerID ? record : undefined) },
+    } as unknown as ModelEditor
+    const rebuild = () => {
+      added = new Map()
+      transform?.(editor)
+    }
+    return Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const switched = yield* Queue.unbounded<{ data: { integrationID: string } }>()
+          const ctx = {
+            options: { ...options, discoverModels: undefined },
+            integration: {
+              transform: () => Effect.succeed({ dispose: Effect.void }),
+              connection: { active: () => Effect.sync(() => active), resolve: () => Effect.succeed(credential) },
+            },
+            model: {
+              transform: (callback: (editor: ModelEditor) => void) => {
+                transform = callback
+                rebuild()
+                return Effect.succeed({ dispose: Effect.void })
+              },
+              reload: () =>
+                Effect.sync(() => {
+                  reloads++
+                  rebuild()
+                }),
+            },
+            event: { subscribe: () => Stream.fromQueue(switched) },
+          }
+          yield* plugin.effect(ctx as unknown as Context)
+          yield* body({
+            requests,
+            models,
+            added: () => added,
+            reloaded: (count) =>
+              Effect.gen(function* () {
+                while (reloads < count) yield* Effect.sleep("5 millis")
+              }),
+            switchTo: (connection) =>
+              Effect.gen(function* () {
+                active = connection
+                yield* Queue.offer(switched, { data: { integrationID: providerID } })
+              }),
+            loadProvider: () => {
+              providerLoaded = true
+              rebuild()
+            },
+          })
+        }),
+      ),
+    ).finally(() => server.stop(true))
+  }
+
+  const listing = (...ids: unknown[]) => Response.json({ object: "list", data: ids })
+
+  test("adds the models the config doesn't list, as if the config listed them by ID", () =>
+    discover(
+      () => listing({ id: "configured" }, { id: "discovered" }, { id: "" }, { name: "no id" }, { id: "discovered" }),
+      ({ requests, added, reloaded }) =>
+        Effect.gen(function* () {
+          yield* reloaded(1)
+          expect(requests).toEqual([{ path: "/v1/models", authorization: "Bearer access-token", showing: ["configured"] }])
+          expect([...added().entries()]).toEqual([
+            ["discovered", Model.Info.default(providerID, Model.ID.make("discovered"))],
+          ])
+        }),
+    ))
+
+  test("loads without waiting for /models", () =>
+    discover(
+      () => new Promise<Response>(() => {}),
+      ({ models }) =>
+        Effect.sync(() => {
+          expect(models()).toEqual(["configured"])
+        }),
+    ))
+
+  test("lists the models once OpenCode has loaded the provider", () =>
+    discover(
+      () => listing({ id: "discovered" }),
+      ({ requests, models, reloaded, loadProvider }) =>
+        Effect.gen(function* () {
+          yield* Effect.sleep("20 millis")
+          expect(requests).toEqual([])
+          loadProvider()
+          yield* reloaded(1)
+          expect(models()).toEqual(["configured", "discovered"])
+        }),
+      { providerLoaded: false },
+    ))
+
+  test("never sends the token to a plain http provider", async () => {
+    const original = globalThis.fetch
+    const fetched: string[] = []
+    globalThis.fetch = Object.assign(
+      (input: string | URL | Request, init?: RequestInit) => {
+        fetched.push(String(input instanceof Request ? input.url : input))
+        return original(input, init)
+      },
+      { preconnect: original.preconnect },
+    )
+    try {
+      await discover(
+        () => listing({ id: "discovered" }),
+        ({ models, reloaded }) =>
+          Effect.gen(function* () {
+            yield* reloaded(1)
+            expect(fetched).toEqual([])
+            expect(models()).toEqual(["configured"])
+          }),
+        { baseURL: "http://llm.example/v1" },
+      )
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+
+  test("keeps the list through a failure, but never shows it to another account", () => {
+    let healthy = true
+    return discover(
+      () => (healthy ? listing({ id: "discovered" }) : new Response("unavailable", { status: 503 })),
+      ({ requests, models, reloaded, switchTo }) =>
+        Effect.gen(function* () {
+          yield* reloaded(1)
+          healthy = false
+          yield* switchTo(signedIn("first"))
+          yield* reloaded(2)
+          expect(models()).toEqual(["configured", "discovered"])
+          yield* switchTo(signedIn("second"))
+          while (requests.length < 3) yield* Effect.sleep("5 millis")
+          expect(requests[2]!.showing).toEqual(["configured"])
+          yield* reloaded(4)
+          expect(models()).toEqual(["configured"])
+        }),
+    )
   })
 })
