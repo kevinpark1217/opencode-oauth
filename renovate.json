@@ -1,12 +1,44 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "customDatasources": {
+    "opencode-plugin": {
+      "defaultRegistryUrlTemplate": "https://registry.npmjs.org/@opencode/plugin/latest",
+      "transformTemplates": ["{\"releases\": [{\"version\": $lookup($merge([dependencies, devDependencies]), \"{{{packageName}}}\")}]}"]
+    },
+    "opencode-bun": {
+      "defaultRegistryUrlTemplate": "https://cdn.jsdelivr.net/gh/anomalyco/opencode@latest/package.json",
+      "transformTemplates": ["{\"releases\": [{\"version\": $substringAfter(packageManager, \"bun@\")}]}"]
+    }
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^package\\.json$/"],
+      "matchStrings": ["\"(?<depName>effect|@types/bun)\": \"(?<currentValue>\\d[^\"]*)\""],
+      "datasourceTemplate": "custom.opencode-plugin",
+      "versioningTemplate": "npm"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^package\\.json$/"],
+      "matchStrings": ["\"packageManager\": \"(?<depName>bun)@(?<currentValue>[^\"]+)\""],
+      "datasourceTemplate": "custom.opencode-bun",
+      "versioningTemplate": "npm"
+    }
+  ],
   "packageRules": [
     {
-      "description": "OpenCode hands plugins its own effect and runs them on its own Bun: bump these together, by hand (CONTRIBUTING.md, Updating dependencies).",
+      "description": "OpenCode runs plugins with its own effect and Bun, so the custom managers above take these versions from OpenCode instead of from their own releases. effect and @types/bun come from @opencode/plugin, so they change only with it and bun.lock gets updated.",
+      "matchManagers": ["bun"],
+      "matchPackageNames": ["effect", "@types/bun", "bun"],
+      "enabled": false
+    },
+    {
+      "description": "One pull request for the plugin API, effect and Bun, even across major versions.",
       "matchPackageNames": ["@opencode/plugin", "effect", "@types/bun", "bun"],
       "groupName": "OpenCode host",
-      "dependencyDashboardApproval": true
+      "separateMajorMinor": false
     }
   ]
 }
