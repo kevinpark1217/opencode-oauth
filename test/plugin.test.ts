@@ -161,15 +161,18 @@ describe("model discovery", () => {
   // Runs the plugin against a /models answered by `respond`, with a model chain that holds one configured model.
   // `models()` lists the provider's models after OpenCode's last rebuild; `added()` those discovery created.
   function discover(
-    respond: () => Response | Promise<Response>,
+    respond: (path: string) => Response | Promise<Response>,
     body: (harness: {
       // Each request also records the models OpenCode showed when it arrived.
       readonly requests: { readonly path: string; readonly authorization: string | null; readonly showing: string[] }[]
       readonly models: () => string[]
       readonly added: () => Map<string, Model.Info>
+      // The signed-in account and the models OpenCode showed after each reload.
+      readonly history: { readonly account: string; readonly models: string[] }[]
       readonly reloaded: (count: number) => Effect.Effect<void>
       readonly switchTo: (connection: ReturnType<typeof signedIn>) => Effect.Effect<void>
       readonly loadProvider: () => void
+      readonly moveProvider: (path: string) => void
     }) => Effect.Effect<void>,
     setup: { readonly providerLoaded?: boolean; readonly baseURL?: string } = {},
   ) {
@@ -178,19 +181,16 @@ describe("model discovery", () => {
       hostname: "127.0.0.1",
       port: 0,
       fetch: (request) => {
-        requests.push({
-          path: new URL(request.url).pathname,
-          authorization: request.headers.get("authorization"),
-          showing: models(),
-        })
-        return respond()
+        const path = new URL(request.url).pathname
+        requests.push({ path, authorization: request.headers.get("authorization"), showing: models() })
+        return respond(path)
       },
     })
     let providerLoaded = setup.providerLoaded ?? true
     let active = signedIn("first")
     let added = new Map<string, Model.Info>()
     let transform: ((editor: ModelEditor) => void) | undefined
-    let reloads = 0
+    const history: { account: string; models: string[] }[] = []
     const models = () => ["configured", ...added.keys()]
     const record = {
       provider: { id: providerID, settings: { baseURL: setup.baseURL ?? `http://127.0.0.1:${server.port}/v1/` } },
@@ -212,7 +212,7 @@ describe("model discovery", () => {
     return Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const switched = yield* Queue.unbounded<{ data: { integrationID: string } }>()
+          const switched = yield* Queue.unbounded<{ type: string; data: { integrationID: string } }>()
           const ctx = {
             options: { ...options, discoverModels: undefined },
             integration: {
@@ -227,8 +227,8 @@ describe("model discovery", () => {
               },
               reload: () =>
                 Effect.sync(() => {
-                  reloads++
                   rebuild()
+                  history.push({ account: active.id, models: models() })
                 }),
             },
             event: { subscribe: () => Stream.fromQueue(switched) },
@@ -238,17 +238,22 @@ describe("model discovery", () => {
             requests,
             models,
             added: () => added,
+            history,
             reloaded: (count) =>
               Effect.gen(function* () {
-                while (reloads < count) yield* Effect.sleep("5 millis")
+                while (history.length < count) yield* Effect.sleep("5 millis")
               }),
             switchTo: (connection) =>
               Effect.gen(function* () {
                 active = connection
-                yield* Queue.offer(switched, { data: { integrationID: providerID } })
+                yield* Queue.offer(switched, { type: "credential.switched", data: { integrationID: providerID } })
               }),
             loadProvider: () => {
               providerLoaded = true
+              rebuild()
+            },
+            moveProvider: (path) => {
+              record.provider.settings.baseURL = `http://127.0.0.1:${server.port}${path}`
               rebuild()
             },
           })
@@ -293,6 +298,38 @@ describe("model discovery", () => {
           expect(models()).toEqual(["configured", "discovered"])
         }),
       { providerLoaded: false },
+    ))
+
+  test("drops a list that arrives after the account switched", () => {
+    let release = () => {}
+    const held = new Promise<void>((resolve) => (release = resolve))
+    let calls = 0
+    return discover(
+      () => (++calls === 1 ? held.then(() => listing({ id: "first-model" })) : listing({ id: "second-model" })),
+      ({ requests, history, models, reloaded, switchTo }) =>
+        Effect.gen(function* () {
+          while (requests.length < 1) yield* Effect.sleep("5 millis")
+          yield* switchTo(signedIn("second"))
+          release()
+          yield* reloaded(2)
+          expect(history.filter((entry) => entry.models.includes("first-model"))).toEqual([])
+          expect(models()).toEqual(["configured", "second-model"])
+        }),
+    )
+  })
+
+  test("lists again from a new baseURL, without showing the old one's models", () =>
+    discover(
+      (path) => listing({ id: path === "/v1/models" ? "old-model" : "new-model" }),
+      ({ models, reloaded, moveProvider }) =>
+        Effect.gen(function* () {
+          yield* reloaded(1)
+          expect(models()).toEqual(["configured", "old-model"])
+          moveProvider("/v2")
+          expect(models()).toEqual(["configured"])
+          yield* reloaded(3)
+          expect(models()).toEqual(["configured", "new-model"])
+        }),
     ))
 
   test("never sends the token to a plain http provider", async () => {

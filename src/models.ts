@@ -25,15 +25,16 @@ export function discoverModels(ctx: Plugin.Context, providerID: string) {
     let found: { readonly credentialID: string; readonly baseURL: string; readonly ids: readonly string[] } | undefined
     const refreshes = yield* Queue.unbounded<void>()
 
-    // A provider from the user's config joins OpenCode's provider chain after plugins, so this reads and adds
-    // models here. A new model starts as if the config listed it by ID; one the config lists exists and stays as is.
+    // OpenCode applies the config's providers after plugins' provider transforms, so the provider is read, and its
+    // models added, in the model chain. A new model starts as if the config listed it by ID; a configured one stays.
     yield* ctx.model.transform((models) => {
       const url = models.provider.get(providerID)?.provider.settings?.baseURL
       if (typeof url === "string" && url !== baseURL) {
         baseURL = url
         Queue.offerUnsafe(refreshes, undefined)
       }
-      for (const id of found?.ids ?? []) if (!models.get(providerID, id)) models.update(providerID, id, () => {})
+      if (!found || found.baseURL !== baseURL) return
+      for (const id of found.ids) if (!models.get(providerID, id)) models.update(providerID, id, () => {})
     })
 
     const list = (connection: Connection | undefined, url: string | undefined) =>
@@ -54,18 +55,21 @@ export function discoverModels(ctx: Plugin.Context, providerID: string) {
         yield* ctx.model.reload()
       }
       const kept = found
-      found = yield* list(connection, url).pipe(
+      const listed = yield* list(connection, url).pipe(
         Effect.catch((error) =>
           Effect.logWarning(`model discovery failed: ${error instanceof Error ? error.message : String(error)}`).pipe(
             Effect.as(kept),
           ),
         ),
       )
+      // An account switched in meanwhile has its own refresh queued.
+      const now = yield* ctx.integration.connection.active(providerID)
+      found = listed && now?.type === "credential" && now.id === listed.credentialID ? listed : undefined
       yield* ctx.model.reload()
     })
 
     yield* ctx.event.subscribe({ types: ["credential.switched"] }).pipe(
-      Stream.filter((event) => event.data.integrationID === providerID),
+      Stream.filter((event) => event.type === "credential.switched" && event.data.integrationID === providerID),
       Stream.runForEach(() => Queue.offer(refreshes, undefined)),
       Effect.forkScoped({ startImmediately: true }),
     )
