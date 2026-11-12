@@ -136,6 +136,7 @@ describe("sign-in", () => {
       client_id: "opencode",
       redirect_uri: redirectOf(url),
     })
+    expect(form).not.toHaveProperty("resource")
     const challenge = createHash("sha256")
       .update(form?.code_verifier ?? "")
       .digest("base64url")
@@ -151,6 +152,20 @@ describe("sign-in", () => {
     const { url } = await Effect.runPromise(signIn(options, callback()))
     expect(url.searchParams.get("audience")).toBe("https://api.example")
     expect(url.searchParams.get("response_type")).toBe("code")
+  })
+
+  test("sends the authorization resource when redeeming the code", async () => {
+    using tokens = tokenEndpoint([bearer])
+    const resource = "https://api.example/llm"
+    const options = {
+      ...optionsFor(tokens.url),
+      authorizationParams: { resource, audience: "https://api.example", prompt: "login" },
+    }
+    const { url } = await Effect.runPromise(signIn(options, callback()))
+    expect(url.searchParams.get("resource")).toBe(resource)
+    expect(tokens.forms[0]).toMatchObject({ grant_type: "authorization_code", resource })
+    expect(tokens.forms[0]).not.toHaveProperty("audience")
+    expect(tokens.forms[0]).not.toHaveProperty("prompt")
   })
 
   test("listens on a fixed port when one is set", async () => {
@@ -261,6 +276,19 @@ describe("refresh", () => {
     const next = await credential()
     expect(tokens.forms).toEqual([{ grant_type: "refresh_token", refresh_token: current.refresh, client_id: "opencode" }])
     expect(next).toMatchObject({ access: "new-access", refresh: current.refresh })
+  })
+
+  test("keeps the resource when refreshing without forwarding other authorization parameters", async () => {
+    using tokens = tokenEndpoint([bearer])
+    const resource = "https://api.example/llm"
+    const { current, credential } = refresher({
+      ...optionsFor(tokens.url),
+      authorizationParams: { resource, audience: "https://api.example", prompt: "login" },
+    })
+    await credential()
+    expect(tokens.forms).toEqual([
+      { grant_type: "refresh_token", refresh_token: current.refresh, client_id: "opencode", resource },
+    ])
   })
 
   test("sends one request for concurrent and later refreshes of the same token", async () => {

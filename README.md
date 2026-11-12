@@ -94,7 +94,7 @@ Pinning a version (`opencode-oauth@<version>`) turns update checks off.
 | `authorizationEndpoint`, `tokenEndpoint` | instead of `issuer` | The endpoints themselves, for a server that publishes no metadata, or whose metadata names a different issuer. |
 | `scope` | yes | The scopes to request, space-separated. Include what gets you a refresh token. |
 | `port` | no | The loopback redirect's port. Unset or `0` lets the OS pick one. |
-| `authorizationParams` | no | Extra parameters for the authorization request, such as `{ "audience": "https://llm.example.com" }` for a server that picks the access token's audience from one. It cannot replace the parameters the grant sets itself. |
+| `authorizationParams` | no | Extra parameters for the authorization request, such as `{ "audience": "https://llm.example.com" }` for a server that picks the access token's audience from one. It cannot replace the parameters the grant sets itself. `resource` is also sent when exchanging the code and refreshing the token ([RFC 8707](https://www.rfc-editor.org/rfc/rfc8707.html)). Other extra parameters are only sent in the authorization request. |
 | `searchURL` | no | A SearXNG search endpoint that accepts the same access token, such as `https://search.example.com/search`. See below. |
 | `discoverModels` | no | `false` stops the plugin adding the models that the provider's `/models` lists. |
 
