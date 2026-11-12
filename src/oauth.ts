@@ -288,7 +288,12 @@ function requestToken(client: Client, grant: Record<string, string>, previousRef
 // new one: the old token is spent, so asking again could only fail.
 const refreshes = new Map<string, Promise<Credential.OAuth>>()
 
-function refreshToken(clientID: string, server: () => Effect.Effect<Server, Error>, current: Credential.OAuth) {
+function refreshToken(
+  clientID: string,
+  server: () => Effect.Effect<Server, Error>,
+  current: Credential.OAuth,
+  resource?: string,
+) {
   return Effect.tryPromise({
     try: () => {
       const pending = refreshes.get(current.refresh)
@@ -298,7 +303,11 @@ function refreshToken(clientID: string, server: () => Effect.Effect<Server, Erro
           Effect.flatMap(({ tokenEndpoint }) =>
             requestToken(
               { clientID, tokenEndpoint },
-              { grant_type: "refresh_token", refresh_token: current.refresh },
+              {
+                grant_type: "refresh_token",
+                refresh_token: current.refresh,
+                ...(resource === undefined ? {} : { resource }),
+              },
               current.refresh,
             ),
           ),
@@ -403,6 +412,7 @@ function authorize(options: Options, authServer: Server): Effect.Effect<Integrat
         const { code, response } = yield* Deferred.await(received)
         return yield* requestToken({ clientID: options.clientID, tokenEndpoint: authServer.tokenEndpoint }, {
           grant_type: "authorization_code",
+          ...(options.authorizationParams?.resource === undefined ? {} : { resource: options.authorizationParams.resource }),
           code,
           redirect_uri: redirect,
           code_verifier: verifier,
@@ -422,6 +432,6 @@ export function registration(options: Options): IntegrationOAuthMethodRegistrati
     integrationID: options.provider,
     method: { id: methodID, type: "oauth", label: "Sign in" },
     authorize: () => server().pipe(Effect.flatMap((authServer) => authorize(options, authServer))),
-    refresh: (current) => refreshToken(options.clientID, server, current),
+    refresh: (current) => refreshToken(options.clientID, server, current, options.authorizationParams?.resource),
   }
 }
