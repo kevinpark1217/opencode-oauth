@@ -111,6 +111,19 @@ describe("options", () => {
       "authorizationParams cannot set redirect_uri",
     )
     expect(() => parseOptions(withParams({ code_challenge_method: "plain" }))).toThrow()
+    expect(() => parseOptions(withParams({ resource: "https://api.example" }))).toThrow(
+      "set resource as an option of its own, not in authorizationParams",
+    )
+  })
+
+  test("takes resource as an absolute URI without a fragment", () => {
+    const withResource = (resource: string) => ({ ...optionsFor("https://auth.example/token"), resource })
+    const invalid = "resource must be an absolute URI without a fragment"
+    expect(() => parseOptions(withResource("https://api.example/llm"))).not.toThrow()
+    expect(() => parseOptions(withResource("urn:example:llm"))).not.toThrow()
+    expect(() => parseOptions(withResource("api.example/llm"))).toThrow(invalid)
+    expect(() => parseOptions(withResource("https://api.example/llm "))).toThrow(invalid)
+    expect(() => parseOptions(withResource("https://api.example/#llm"))).toThrow(invalid)
   })
 })
 
@@ -151,6 +164,14 @@ describe("sign-in", () => {
     const { url } = await Effect.runPromise(signIn(options, callback()))
     expect(url.searchParams.get("audience")).toBe("https://api.example")
     expect(url.searchParams.get("response_type")).toBe("code")
+  })
+
+  test("sends the resource with the authorization request and the code", async () => {
+    using tokens = tokenEndpoint([bearer])
+    const resource = "https://api.example/llm"
+    const { url } = await Effect.runPromise(signIn({ ...optionsFor(tokens.url), resource }, callback()))
+    expect(url.searchParams.get("resource")).toBe(resource)
+    expect(tokens.forms[0]).toMatchObject({ grant_type: "authorization_code", resource })
   })
 
   test("listens on a fixed port when one is set", async () => {
@@ -261,6 +282,16 @@ describe("refresh", () => {
     const next = await credential()
     expect(tokens.forms).toEqual([{ grant_type: "refresh_token", refresh_token: current.refresh, client_id: "opencode" }])
     expect(next).toMatchObject({ access: "new-access", refresh: current.refresh })
+  })
+
+  test("sends the resource with the refresh token", async () => {
+    using tokens = tokenEndpoint([bearer])
+    const resource = "https://api.example/llm"
+    const { current, credential } = refresher({ ...optionsFor(tokens.url), resource })
+    await credential()
+    expect(tokens.forms).toEqual([
+      { grant_type: "refresh_token", refresh_token: current.refresh, client_id: "opencode", resource },
+    ])
   })
 
   test("sends one request for concurrent and later refreshes of the same token", async () => {
