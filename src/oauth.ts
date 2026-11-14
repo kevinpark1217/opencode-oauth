@@ -14,6 +14,7 @@ const OptionsSchema = Schema.Struct({
   authorizationEndpoint: Schema.optional(Schema.NonEmptyString),
   tokenEndpoint: Schema.optional(Schema.NonEmptyString),
   scope: Schema.NonEmptyString,
+  resource: Schema.optional(Schema.NonEmptyString),
   port: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 65535 }))),
   authorizationParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   searchURL: Schema.optional(Schema.NonEmptyString),
@@ -93,7 +94,12 @@ export function parseOptions(input: unknown): Options {
   } else if (options.authorizationEndpoint === undefined || options.tokenEndpoint === undefined) {
     throw new Error("set issuer, or both authorizationEndpoint and tokenEndpoint")
   }
+  // RFC 8707 section 2.
+  if (options.resource !== undefined && (URL.parse(options.resource) === null || /[\s#]/.test(options.resource))) {
+    throw new Error("resource must be an absolute URI without a fragment")
+  }
   for (const key of Object.keys(options.authorizationParams ?? {})) {
+    if (key === "resource") throw new Error("set resource as an option of its own, not in authorizationParams")
     if (reservedParams.includes(key)) throw new Error(`authorizationParams cannot set ${key}`)
   }
   return options
@@ -119,10 +125,7 @@ const reply = (response: ServerResponse, status: number, text: string) =>
 const quotable = (value: unknown, max = 64): value is string =>
   typeof value === "string" && value.length <= max && /^[\x20-\x21\x23-\x5B\x5D-\x7E]+$/.test(value)
 
-interface Client {
-  readonly clientID: string
-  readonly tokenEndpoint: string
-}
+type Client = Pick<Options, "clientID" | "resource">
 
 interface Server {
   readonly authorizationEndpoint: string
@@ -217,13 +220,17 @@ function serverFor(options: Options): () => Effect.Effect<Server, Error> {
     })
 }
 
-function postTokenRequest(client: Client, grant: Record<string, string>) {
+function postTokenRequest(client: Client, tokenEndpoint: string, grant: Record<string, string>) {
   return Effect.tryPromise({
     try: async (signal): Promise<unknown> => {
-      const response = await fetch(client.tokenEndpoint, {
+      const body = new URLSearchParams({ ...grant, client_id: client.clientID })
+      // RFC 8707 section 2.2 lets a server limit a code or refresh token to the
+      // resource it was granted for, and some refuse a request that omits it.
+      if (client.resource !== undefined) body.set("resource", client.resource)
+      const response = await fetch(tokenEndpoint, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
-        body: new URLSearchParams({ ...grant, client_id: client.clientID }),
+        body,
         // The body carries a code or a refresh token: never follow it elsewhere.
         redirect: "error",
         signal: AbortSignal.any([signal, AbortSignal.timeout(tokenRequestTimeoutMs)]),
@@ -262,9 +269,9 @@ function acceptTokenResponse(body: unknown) {
 }
 
 // A refresh may omit refresh_token, which keeps the old one (RFC 6749 section 6).
-function requestToken(client: Client, grant: Record<string, string>, previousRefresh?: string) {
+function requestToken(client: Client, tokenEndpoint: string, grant: Record<string, string>, previousRefresh?: string) {
   return Effect.gen(function* () {
-    const tokens = yield* postTokenRequest(client, grant).pipe(Effect.flatMap(acceptTokenResponse))
+    const tokens = yield* postTokenRequest(client, tokenEndpoint, grant).pipe(Effect.flatMap(acceptTokenResponse))
     const refresh = tokens.refresh_token ?? previousRefresh
     if (refresh === undefined) {
       return yield* Effect.fail(
@@ -288,12 +295,7 @@ function requestToken(client: Client, grant: Record<string, string>, previousRef
 // new one: the old token is spent, so asking again could only fail.
 const refreshes = new Map<string, Promise<Credential.OAuth>>()
 
-function refreshToken(
-  clientID: string,
-  server: () => Effect.Effect<Server, Error>,
-  current: Credential.OAuth,
-  resource?: string,
-) {
+function refreshToken(options: Options, server: () => Effect.Effect<Server, Error>, current: Credential.OAuth) {
   return Effect.tryPromise({
     try: () => {
       const pending = refreshes.get(current.refresh)
@@ -302,12 +304,9 @@ function refreshToken(
         server().pipe(
           Effect.flatMap(({ tokenEndpoint }) =>
             requestToken(
-              { clientID, tokenEndpoint },
-              {
-                grant_type: "refresh_token",
-                refresh_token: current.refresh,
-                ...(resource === undefined ? {} : { resource }),
-              },
+              options,
+              tokenEndpoint,
+              { grant_type: "refresh_token", refresh_token: current.refresh },
               current.refresh,
             ),
           ),
@@ -403,6 +402,7 @@ function authorize(options: Options, authServer: Server): Effect.Effect<Integrat
     })) {
       url.searchParams.set(key, value)
     }
+    if (options.resource !== undefined) url.searchParams.set("resource", options.resource)
 
     return {
       mode: "auto",
@@ -410,9 +410,8 @@ function authorize(options: Options, authServer: Server): Effect.Effect<Integrat
       instructions: "Finish signing in in your browser.",
       callback: Effect.gen(function* () {
         const { code, response } = yield* Deferred.await(received)
-        return yield* requestToken({ clientID: options.clientID, tokenEndpoint: authServer.tokenEndpoint }, {
+        return yield* requestToken(options, authServer.tokenEndpoint, {
           grant_type: "authorization_code",
-          ...(options.authorizationParams?.resource === undefined ? {} : { resource: options.authorizationParams.resource }),
           code,
           redirect_uri: redirect,
           code_verifier: verifier,
@@ -432,6 +431,6 @@ export function registration(options: Options): IntegrationOAuthMethodRegistrati
     integrationID: options.provider,
     method: { id: methodID, type: "oauth", label: "Sign in" },
     authorize: () => server().pipe(Effect.flatMap((authServer) => authorize(options, authServer))),
-    refresh: (current) => refreshToken(options.clientID, server, current, options.authorizationParams?.resource),
+    refresh: (current) => refreshToken(options, server, current),
   }
 }

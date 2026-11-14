@@ -111,6 +111,19 @@ describe("options", () => {
       "authorizationParams cannot set redirect_uri",
     )
     expect(() => parseOptions(withParams({ code_challenge_method: "plain" }))).toThrow()
+    expect(() => parseOptions(withParams({ resource: "https://api.example" }))).toThrow(
+      "set resource as an option of its own, not in authorizationParams",
+    )
+  })
+
+  test("takes resource as an absolute URI without a fragment", () => {
+    const withResource = (resource: string) => ({ ...optionsFor("https://auth.example/token"), resource })
+    const invalid = "resource must be an absolute URI without a fragment"
+    expect(() => parseOptions(withResource("https://api.example/llm"))).not.toThrow()
+    expect(() => parseOptions(withResource("urn:example:llm"))).not.toThrow()
+    expect(() => parseOptions(withResource("api.example/llm"))).toThrow(invalid)
+    expect(() => parseOptions(withResource("https://api.example/llm "))).toThrow(invalid)
+    expect(() => parseOptions(withResource("https://api.example/#llm"))).toThrow(invalid)
   })
 })
 
@@ -136,7 +149,6 @@ describe("sign-in", () => {
       client_id: "opencode",
       redirect_uri: redirectOf(url),
     })
-    expect(form).not.toHaveProperty("resource")
     const challenge = createHash("sha256")
       .update(form?.code_verifier ?? "")
       .digest("base64url")
@@ -154,18 +166,12 @@ describe("sign-in", () => {
     expect(url.searchParams.get("response_type")).toBe("code")
   })
 
-  test("sends the authorization resource when redeeming the code", async () => {
+  test("sends the resource with the authorization request and the code", async () => {
     using tokens = tokenEndpoint([bearer])
     const resource = "https://api.example/llm"
-    const options = {
-      ...optionsFor(tokens.url),
-      authorizationParams: { resource, audience: "https://api.example", prompt: "login" },
-    }
-    const { url } = await Effect.runPromise(signIn(options, callback()))
+    const { url } = await Effect.runPromise(signIn({ ...optionsFor(tokens.url), resource }, callback()))
     expect(url.searchParams.get("resource")).toBe(resource)
     expect(tokens.forms[0]).toMatchObject({ grant_type: "authorization_code", resource })
-    expect(tokens.forms[0]).not.toHaveProperty("audience")
-    expect(tokens.forms[0]).not.toHaveProperty("prompt")
   })
 
   test("listens on a fixed port when one is set", async () => {
@@ -278,13 +284,10 @@ describe("refresh", () => {
     expect(next).toMatchObject({ access: "new-access", refresh: current.refresh })
   })
 
-  test("keeps the resource when refreshing without forwarding other authorization parameters", async () => {
+  test("sends the resource with the refresh token", async () => {
     using tokens = tokenEndpoint([bearer])
     const resource = "https://api.example/llm"
-    const { current, credential } = refresher({
-      ...optionsFor(tokens.url),
-      authorizationParams: { resource, audience: "https://api.example", prompt: "login" },
-    })
+    const { current, credential } = refresher({ ...optionsFor(tokens.url), resource })
     await credential()
     expect(tokens.forms).toEqual([
       { grant_type: "refresh_token", refresh_token: current.refresh, client_id: "opencode", resource },
