@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.0](https://github.com/kevinpark1217/opencode-oauth/compare/v0.3.0...v0.4.0) (2026-11-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* authorizationParams no longer accepts resource; set the resource option instead.
+
+### Features
+
+* send the resource with every token request ([#36](https://github.com/kevinpark1217/opencode-oauth/issues/36)) ([0f68bfe](https://github.com/kevinpark1217/opencode-oauth/commit/0f68bfe9e9bc66755f60602b855f5fa08945c28a))
+
 ## [0.3.0](https://github.com/kevinpark1217/opencode-oauth/compare/v0.2.0...v0.3.0) (2026-11-04)
 
 
