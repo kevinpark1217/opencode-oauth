@@ -182,7 +182,8 @@ describe("model discovery", () => {
     const models = () => [...shown.keys()]
     const provider = { id: providerID, settings: { baseURL: setup.baseURL ?? `http://127.0.0.1:${server.port}/v1/` } }
     const editor = {
-      update: (_id: string, model: string, update: (draft: Model.Info) => void) => {
+      update: (id: string, model: string, update: (draft: Model.Info) => void) => {
+        if (id !== providerID) return
         const draft = shown.get(model) ?? defaults(model)
         update(draft)
         shown.set(model, draft)
