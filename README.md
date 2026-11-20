@@ -68,9 +68,8 @@ The browser opens your identity provider, and after you sign in the tab says so.
 OpenCode renews the token on its own from then on.
 
 The plugin then adds the models that the provider's `/models` lists, named by
-their IDs, with no reasoning-effort variants. Each takes the context size the
-server reports there, as vLLM, SGLang and llama.cpp do, or else OpenCode's
-default limits. To change any of this for a model, list it under the provider's
+their IDs, with no reasoning-effort variants. Each takes the context size that
+vLLM, SGLang and llama.cpp report there, or else OpenCode's default limits. To change any of this for a model, list it under the provider's
 `models`: what the entry sets wins over what the server reports, and an entry
 that renames a model with `modelID` starts from OpenCode's defaults. Set `model`
 to make one your default.

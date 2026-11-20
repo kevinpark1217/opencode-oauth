@@ -29,7 +29,7 @@ function listModels(baseURL: string, accessToken: string) {
       const sizes = new Map(models.map((model) => [model.id, contextOf(model)]))
       return models.map((model) => ({
         id: model.id,
-        context: contextOf(model) ?? (isAdapter(model) ? sizes.get(model.parent) : undefined),
+        context: sizes.get(model.id) ?? (isAdapter(model) ? sizes.get(model.parent) : undefined),
       }))
     }),
   )
