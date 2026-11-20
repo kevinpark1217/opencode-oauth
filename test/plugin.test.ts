@@ -153,7 +153,7 @@ describe("model discovery", () => {
       // The signed-in account and the models OpenCode showed after each reload.
       readonly history: { readonly account: string; readonly models: string[] }[]
       readonly models: () => string[]
-      readonly added: () => Map<string, Model.Info>
+      readonly shown: () => Map<string, Model.Info>
       readonly reloaded: (count: number) => Effect.Effect<void>
       readonly switchTo: (connection: ReturnType<typeof signedIn>) => Effect.Effect<void>
       readonly providerUpdated: () => Effect.Effect<void>
@@ -174,22 +174,24 @@ describe("model discovery", () => {
     })
     let providerLoaded = setup.providerLoaded ?? true
     let active = signedIn("first")
-    let added = new Map<string, Model.Info>()
+    const defaults = (model: string) => structuredClone(Model.Info.default(providerID, Model.ID.make(model)))
+    const configuredOnly = () => new Map([["configured", defaults("configured")]])
+    let shown = configuredOnly()
     let transform: ((editor: ModelEditor) => void) | undefined
     const history: { account: string; models: string[] }[] = []
-    const models = () => ["configured", ...added.keys()]
+    const models = () => [...shown.keys()]
     const provider = { id: providerID, settings: { baseURL: setup.baseURL ?? `http://127.0.0.1:${server.port}/v1/` } }
     const editor = {
-      get: (id: string, model: string) => (id === providerID && model === "configured" ? { id: model } : added.get(model)),
       update: (id: string, model: string, update: (draft: Model.Info) => void) => {
-        const draft = structuredClone(Model.Info.default(Provider.ID.make(id), Model.ID.make(model)))
+        if (id !== providerID) return
+        const draft = shown.get(model) ?? defaults(model)
         update(draft)
-        added.set(model, draft)
+        shown.set(model, draft)
       },
       provider: { get: (id: string) => (providerLoaded && id === providerID ? { provider } : undefined) },
     } as unknown as ModelEditor
     const rebuild = () => {
-      added = new Map()
+      shown = configuredOnly()
       transform?.(editor)
     }
     return Effect.runPromise(
@@ -226,7 +228,7 @@ describe("model discovery", () => {
             requests,
             history,
             models,
-            added: () => added,
+            shown: () => shown,
             reloaded: (count) =>
               Effect.gen(function* () {
                 while (history.length < count) yield* Effect.sleep("5 millis")
@@ -259,12 +261,37 @@ describe("model discovery", () => {
   test("adds the models the config doesn't list, as if the config listed them by ID", () =>
     discover(
       () => listing({ id: "configured" }, { id: "discovered" }, { id: "" }, { name: "no id" }, { id: "discovered" }),
-      ({ requests, added, reloaded }) =>
+      ({ requests, shown, reloaded }) =>
         Effect.gen(function* () {
           yield* reloaded(1)
           expect(requests).toEqual([{ path: "/v1/models", authorization: "Bearer access-token", showing: ["configured"] }])
-          expect([...added().entries()]).toEqual([
+          expect([...shown().entries()]).toEqual([
+            ["configured", Model.Info.default(providerID, Model.ID.make("configured"))],
             ["discovered", Model.Info.default(providerID, Model.ID.make("discovered"))],
+          ])
+        }),
+    ))
+
+  test("takes each model's context from /models, configured ones too, and only a size the server serves", () =>
+    discover(
+      () =>
+        listing(
+          { id: "configured", max_model_len: 262_144 },
+          { id: "llama", meta: { n_ctx: 8192, n_ctx_train: 131_072 } },
+          { id: "adapter", parent: "configured", max_model_len: null },
+          { id: "odd", max_model_len: "8192", meta: { n_ctx: -1 } },
+          { id: "fraction", max_model_len: 8192.5 },
+        ),
+      ({ shown, reloaded }) =>
+        Effect.gen(function* () {
+          yield* reloaded(1)
+          const { context } = Model.Info.default(providerID, Model.ID.make("any")).limit
+          expect([...shown()].map(([id, model]) => [id, model.limit.context])).toEqual([
+            ["configured", 262_144],
+            ["llama", 8192],
+            ["adapter", 262_144],
+            ["odd", context],
+            ["fraction", context],
           ])
         }),
     ))

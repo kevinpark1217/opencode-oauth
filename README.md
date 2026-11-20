@@ -68,9 +68,12 @@ The browser opens your identity provider, and after you sign in the tab says so.
 OpenCode renews the token on its own from then on.
 
 The plugin then adds the models that the provider's `/models` lists, named by
-their IDs, with OpenCode's default limits and no reasoning-effort variants. To
-change those for a model, list it under the provider's `models`; set `model` to
-make one your default.
+their IDs, with no reasoning-effort variants. Each has OpenCode's default
+limits, except the context size where vLLM, SGLang or llama.cpp reports one
+there. To change any of this for a model, list it under the provider's
+`models`: what the entry sets wins over what the server reports, and an entry
+that renames a model with `modelID` starts from OpenCode's defaults. Set `model`
+to make one your default.
 
 Each plugin entry signs in to one provider, and replaces that provider's API key
 method with the sign-in.
@@ -97,7 +100,7 @@ Pinning a version (`opencode-oauth@<version>`) turns update checks off.
 | `port` | no | The loopback redirect's port. Unset or `0` lets the OS pick one. |
 | `authorizationParams` | no | Extra parameters for the authorization request, such as `{ "audience": "https://llm.example.com" }` for a server that picks the access token's audience from one. It cannot set `resource`, or replace the parameters the grant sets itself. |
 | `searchURL` | no | A SearXNG search endpoint that accepts the same access token, such as `https://search.example.com/search`. See below. |
-| `discoverModels` | no | `false` stops the plugin adding the models that the provider's `/models` lists. |
+| `discoverModels` | no | `false` stops the plugin reading the provider's `/models`: it adds no models and takes no context sizes. |
 
 Plain `http` is accepted for `issuer`, the endpoints and `searchURL` only on
 `127.0.0.1` or `[::1]`, and models are listed only from a provider `baseURL`
