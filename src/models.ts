@@ -8,9 +8,14 @@ const isModel = Schema.is(Schema.Struct({ id: Schema.NonEmptyString }))
 
 // The context the server serves: vLLM and SGLang report it as max_model_len, llama.cpp as meta.n_ctx (its
 // n_ctx_train is the model's training context).
-const Context = Schema.Int.pipe(Schema.check(Schema.isGreaterThan(0)))
-const hasMaxModelLen = Schema.is(Schema.Struct({ max_model_len: Context }))
-const hasNCtx = Schema.is(Schema.Struct({ meta: Schema.Struct({ n_ctx: Context }) }))
+const ContextSize = Schema.Int.check(Schema.isGreaterThan(0))
+const hasMaxModelLen = Schema.is(Schema.Struct({ max_model_len: ContextSize }))
+const hasNCtx = Schema.is(Schema.Struct({ meta: Schema.Struct({ n_ctx: ContextSize }) }))
+// vLLM and SGLang list a LoRA adapter without one, naming the base model it runs on as its parent.
+const isAdapter = Schema.is(Schema.Struct({ parent: Schema.NonEmptyString }))
+
+const contextOf = (model: object) =>
+  hasMaxModelLen(model) ? model.max_model_len : hasNCtx(model) ? model.meta.n_ctx : undefined
 
 const listTimeoutMs = 10_000
 
@@ -19,12 +24,14 @@ function listModels(baseURL: string, accessToken: string) {
     Effect.flatMap((body) =>
       Schema.decodeUnknownEffect(ModelList)(body).pipe(Effect.mapError(() => new Error("/models returned no model list"))),
     ),
-    Effect.map(({ data }) =>
-      data.filter(isModel).map((model) => ({
+    Effect.map(({ data }) => {
+      const models = data.filter(isModel)
+      const sizes = new Map(models.map((model) => [model.id, contextOf(model)]))
+      return models.map((model) => ({
         id: model.id,
-        context: hasMaxModelLen(model) ? model.max_model_len : hasNCtx(model) ? model.meta.n_ctx : undefined,
-      })),
-    ),
+        context: contextOf(model) ?? (isAdapter(model) ? sizes.get(model.parent) : undefined),
+      }))
+    }),
   )
 }
 
@@ -37,8 +44,8 @@ export function discoverModels(ctx: Plugin.Context, providerID: string) {
     let listedFor: string | undefined
 
     // OpenCode applies the config's providers after plugins' provider transforms, so models are added in the model
-    // chain. A new model starts from OpenCode's model defaults. The config's model entries apply after this chain,
-    // field by field, so a model the config lists takes the context too unless its entry sets one.
+    // chain. A new model starts from OpenCode's model defaults. The config's model entries apply later in the same
+    // chain, field by field, so a model the config lists takes the context too unless its entry sets one.
     yield* ctx.model.transform((models) => {
       if (!found || found.baseURL !== models.provider.get(providerID)?.provider.settings?.baseURL) return
       for (const { id, context } of found.entries)

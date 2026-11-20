@@ -69,7 +69,7 @@ OpenCode renews the token on its own from then on.
 
 The plugin then adds the models that the provider's `/models` lists, named by
 their IDs, with no reasoning-effort variants. Each takes the context size the
-server reports there (vLLM, SGLang and llama.cpp report one), or else OpenCode's
+server reports there, as vLLM, SGLang and llama.cpp do, or else OpenCode's
 default limits. To change any of this for a model, list it under the provider's
 `models`: what the entry sets wins over what the server reports, and an entry
 that renames a model with `modelID` starts from OpenCode's defaults. Set `model`

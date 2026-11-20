@@ -182,7 +182,6 @@ describe("model discovery", () => {
     const models = () => [...shown.keys()]
     const provider = { id: providerID, settings: { baseURL: setup.baseURL ?? `http://127.0.0.1:${server.port}/v1/` } }
     const editor = {
-      get: (id: string, model: string) => (id === providerID ? shown.get(model) : undefined),
       update: (_id: string, model: string, update: (draft: Model.Info) => void) => {
         const draft = shown.get(model) ?? defaults(model)
         update(draft)
@@ -278,8 +277,9 @@ describe("model discovery", () => {
         listing(
           { id: "configured", max_model_len: 262_144 },
           { id: "llama", meta: { n_ctx: 8192, n_ctx_train: 131_072 } },
-          { id: "lora", max_model_len: null },
-          { id: "odd", max_model_len: "8192", meta: { n_ctx: 0 } },
+          { id: "adapter", parent: "configured", max_model_len: null },
+          { id: "odd", max_model_len: "8192", meta: { n_ctx: -1 } },
+          { id: "fraction", max_model_len: 8192.5 },
         ),
       ({ shown, reloaded }) =>
         Effect.gen(function* () {
@@ -288,8 +288,9 @@ describe("model discovery", () => {
           expect([...shown()].map(([id, model]) => [id, model.limit.context])).toEqual([
             ["configured", 262_144],
             ["llama", 8192],
-            ["lora", context],
+            ["adapter", 262_144],
             ["odd", context],
+            ["fraction", context],
           ])
         }),
     ))
