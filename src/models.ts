@@ -6,6 +6,12 @@ import { secure } from "./oauth.js"
 const ModelList = Schema.Struct({ data: Schema.Array(Schema.Unknown) })
 const isModel = Schema.is(Schema.Struct({ id: Schema.NonEmptyString }))
 
+// The context the server serves: vLLM and SGLang report it as max_model_len, llama.cpp as meta.n_ctx (its
+// n_ctx_train is the model's training context).
+const Context = Schema.Int.pipe(Schema.check(Schema.isGreaterThan(0)))
+const hasMaxModelLen = Schema.is(Schema.Struct({ max_model_len: Context }))
+const hasNCtx = Schema.is(Schema.Struct({ meta: Schema.Struct({ n_ctx: Context }) }))
+
 const listTimeoutMs = 10_000
 
 function listModels(baseURL: string, accessToken: string) {
@@ -13,21 +19,32 @@ function listModels(baseURL: string, accessToken: string) {
     Effect.flatMap((body) =>
       Schema.decodeUnknownEffect(ModelList)(body).pipe(Effect.mapError(() => new Error("/models returned no model list"))),
     ),
-    Effect.map(({ data }) => data.filter(isModel).map((model) => model.id)),
+    Effect.map(({ data }) =>
+      data.filter(isModel).map((model) => ({
+        id: model.id,
+        context: hasMaxModelLen(model) ? model.max_model_len : hasNCtx(model) ? model.meta.n_ctx : undefined,
+      })),
+    ),
   )
 }
+
+type Listed = Effect.Success<ReturnType<typeof listModels>>
 
 export function discoverModels(ctx: Plugin.Context, providerID: string) {
   return Effect.gen(function* () {
     // What was listed for one account at one baseURL; it shows only while both still apply.
-    let found: { readonly key: string; readonly baseURL: string; readonly ids: readonly string[] } | undefined
+    let found: { readonly key: string; readonly baseURL: string; readonly entries: Listed } | undefined
     let listedFor: string | undefined
 
     // OpenCode applies the config's providers after plugins' provider transforms, so models are added in the model
-    // chain. A new model gets OpenCode's model defaults; a model the config lists stays as written.
+    // chain. A new model starts from OpenCode's model defaults. The config's model entries apply after this chain,
+    // field by field, so a model the config lists takes the context too unless its entry sets one.
     yield* ctx.model.transform((models) => {
       if (!found || found.baseURL !== models.provider.get(providerID)?.provider.settings?.baseURL) return
-      for (const id of found.ids) if (!models.get(providerID, id)) models.update(providerID, id, () => {})
+      for (const { id, context } of found.entries)
+        models.update(providerID, id, (model) => {
+          if (context) model.limit.context = context
+        })
     })
 
     // The signed-in account and the provider's baseURL, once OpenCode has loaded the provider.
@@ -57,7 +74,7 @@ export function discoverModels(ctx: Plugin.Context, providerID: string) {
         yield* ctx.model.reload()
       }
       if (!to) return
-      const ids = yield* list(to).pipe(
+      const entries = yield* list(to).pipe(
         Effect.catch((error) =>
           Effect.logWarning(`model discovery failed: ${error instanceof Error ? error.message : String(error)}`).pipe(
             Effect.as(undefined),
@@ -65,8 +82,8 @@ export function discoverModels(ctx: Plugin.Context, providerID: string) {
         ),
       )
       // A change while /models answered has its own refresh queued.
-      if (!ids || (yield* target)?.key !== to.key) return
-      found = { key: to.key, baseURL: to.baseURL, ids }
+      if (!entries || (yield* target)?.key !== to.key) return
+      found = { key: to.key, baseURL: to.baseURL, entries }
       yield* ctx.model.reload()
     })
 
