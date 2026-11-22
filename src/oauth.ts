@@ -14,7 +14,8 @@ const OptionsSchema = Schema.Struct({
   issuer: Schema.optional(Schema.NonEmptyString),
   authorizationEndpoint: Schema.optional(Schema.NonEmptyString),
   tokenEndpoint: Schema.optional(Schema.NonEmptyString),
-  scope: Schema.NonEmptyString,
+  // OpenCode turns an unset {env:…} into an empty string, which stays an error.
+  scope: Schema.optional(Schema.NonEmptyString),
   resource: Schema.optional(Schema.NonEmptyString),
   port: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 65535 }))),
   authorizationParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),
@@ -340,7 +341,10 @@ function requestToken(
     const refresh = tokens.refresh_token ?? previousRefresh
     if (refresh === undefined) {
       return yield* Effect.fail(
-        new Error("token endpoint returned no refresh token: grant the client one, often with the offline_access scope"),
+        new Error(
+          "token endpoint returned no refresh token: grant the client one, often by adding offline_access to the scope option; " +
+            'a provider that ignores offline_access without a consent prompt also needs authorizationParams { "prompt": "consent" }',
+        ),
       )
     }
     return Credential.OAuth.make({
@@ -474,7 +478,7 @@ function authorize(options: Options, authServer: Server): Effect.Effect<Integrat
       response_type: "code",
       client_id: options.clientID,
       redirect_uri: redirect,
-      scope: options.scope,
+      ...(options.scope !== undefined ? { scope: options.scope } : {}),
       state,
       code_challenge: base64url(new Uint8Array(digest)),
       code_challenge_method: "S256",

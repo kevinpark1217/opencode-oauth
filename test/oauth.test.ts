@@ -118,6 +118,10 @@ describe("options", () => {
     expect(() => parseOptions(optionsFor("https://auth.example/token#a"))).toThrow("tokenEndpoint cannot have a fragment")
   })
 
+  test("refuses an empty scope rather than treating it as unset", () => {
+    expect(() => parseOptions({ ...optionsFor("https://auth.example/token"), scope: "" })).toThrow('at ["scope"]')
+  })
+
   test("refuses an option it doesn't know, naming it", () => {
     expect(() => parseOptions({ ...optionsFor("https://auth.example/token"), isuer: "https://auth.example" })).toThrow(
       'Expected no excess property\n  at ["isuer"]',
@@ -194,6 +198,16 @@ describe("sign-in", () => {
 
     expect(credential).toMatchObject({ type: "oauth", methodID: "oauth", access: "access", refresh: "refresh" })
     expect(credential.expires).toBeGreaterThanOrEqual(before + 900_000)
+  })
+
+  test("sends no scope of its own when scope is unset, and keeps one in the endpoint's query", async () => {
+    using tokens = tokenEndpoint([bearer, bearer])
+    const { scope: _, ...unscoped } = optionsFor(tokens.url)
+    const plain = await Effect.runPromise(signIn(parseOptions(unscoped), callback()))
+    expect(plain.url.searchParams.has("scope")).toBe(false)
+    const authorizationEndpoint = "https://auth.example/authorize?scope=openid"
+    const kept = await Effect.runPromise(signIn({ ...unscoped, authorizationEndpoint }, callback()))
+    expect(kept.url.searchParams.getAll("scope")).toEqual(["openid"])
   })
 
   test("adds authorizationParams to the authorization request", async () => {
