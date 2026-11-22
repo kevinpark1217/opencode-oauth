@@ -96,6 +96,12 @@ describe("options", () => {
     expect(() => parseOptions(withSearch("http://search.example/search"))).toThrow("searchURL must be an https URL")
   })
 
+  test("refuses an option it doesn't know, naming it", () => {
+    expect(() => parseOptions({ ...optionsFor("https://auth.example/token"), isuer: "https://auth.example" })).toThrow(
+      'Expected no excess property\n  at ["isuer"]',
+    )
+  })
+
   test("takes an issuer instead of the endpoints, but not both", () => {
     const base = { provider: "example", clientID: "opencode", scope: "openid" }
     expect(() => parseOptions({ ...base, issuer: "https://auth.example/realms/a" })).not.toThrow()
