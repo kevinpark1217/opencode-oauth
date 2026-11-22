@@ -163,6 +163,9 @@ The SearXNG instance must allow JSON output (`json` in `search.formats` in its
   sign-in (RFC 6749 section 3.1), so a planted value can't hide the real one.
 - Concurrent renewals of one refresh token share a single request, so a server
   that revokes a reused rotated refresh token does not sign you out.
+- A JSON response is refused past 4 MiB, counted as it arrives and, if it
+  comes compressed, as it decodes, so no server can make OpenCode hold a huge
+  body.
 - Error messages carry an HTTP status and, only when it is short plain text, an
   OAuth error code, the authorization response's error description, a refused
   token type or a metadata issuer, always quoted after where it came from; never
