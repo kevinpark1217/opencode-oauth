@@ -149,6 +149,8 @@ The SearXNG instance must allow JSON output (`json` in `search.formats` in its
   `state`; anything else on the port is refused without ending the sign-in.
 - With `issuer`, the server's metadata must name that same issuer, and an
   authorization response from another issuer is refused (RFC 9207).
+- An authorization response that repeats a parameter the plugin reads ends the
+  sign-in (RFC 6749 section 3.1), so a planted value can't hide the real one.
 - Concurrent renewals of one refresh token share a single request, so a server
   that revokes a reused rotated refresh token does not sign you out.
 - Error messages carry an HTTP status and, only when it is short plain text, the
