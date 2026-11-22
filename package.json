@@ -38,7 +38,7 @@
     "prepack": "bun run build"
   },
   "peerDependencies": {
-    "@opencode/plugin": "^2.0.32",
+    "@opencode/plugin": "^2.2.1",
     "effect": "^4.0.1"
   },
   "peerDependenciesMeta": {

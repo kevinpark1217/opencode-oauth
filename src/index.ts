@@ -1,5 +1,6 @@
 import { Plugin } from "@opencode/plugin/effect"
 import { Effect } from "effect"
+import { checkHost } from "./host.js"
 import { discoverModels } from "./models.js"
 import { parseOptions, registration } from "./oauth.js"
 import { search } from "./search.js"
@@ -8,7 +9,10 @@ export default Plugin.define({
   id: "opencode-oauth",
   effect: (ctx) =>
     Effect.gen(function* () {
-      const options = yield* Effect.sync(() => parseOptions(ctx.options))
+      const options = yield* Effect.sync(() => {
+        checkHost(ctx.app.version)
+        return parseOptions(ctx.options)
+      })
       // OpenCode reruns transforms whenever its registry is rebuilt; one
       // registration keeps the discovered metadata across those reruns.
       const method = registration(options)

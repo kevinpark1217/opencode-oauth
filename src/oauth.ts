@@ -3,7 +3,7 @@ import type {
   IntegrationOAuthAuthorization,
   IntegrationOAuthMethodRegistration,
 } from "@opencode/plugin/effect/integration"
-import { Deferred, Effect, Schema, type SchemaIssue, SchemaTransformation, type Scope } from "effect"
+import { Deferred, Effect, Option, Schema, type SchemaIssue, SchemaTransformation, type Scope } from "effect"
 import { createServer, type ServerResponse } from "node:http"
 import { deadline, explain, type Failure, fetchJSON } from "./fetch.js"
 import { endpointProblem, issuerProblem, resourceProblem, urlProblem } from "./url.js"
@@ -214,27 +214,79 @@ function discover(issuer: string) {
   })
 }
 
-// Metadata is fetched when first needed, not at startup, and kept once it is
-// valid; a failure is retried on the next attempt.
-function serverFor(options: Options): () => Effect.Effect<Server, Error> {
-  const { issuer, authorizationEndpoint, tokenEndpoint } = options
-  if (issuer === undefined) {
-    if (authorizationEndpoint === undefined || tokenEndpoint === undefined) {
-      return () => Effect.fail(new Error("set issuer, or both authorizationEndpoint and tokenEndpoint"))
-    }
-    const server: Server = { authorizationEndpoint, tokenEndpoint }
-    return () => Effect.succeed(server)
-  }
-  let pending: Promise<Server> | undefined
-  return () =>
+type Discover = (issuer: string) => Effect.Effect<Server, Error>
+
+// Metadata is fetched when first needed, not at startup, and kept per issuer once
+// it is valid; a failure is retried on the next attempt.
+function discoverer(): Discover {
+  const pending = new Map<string, Promise<Server>>()
+  return (issuer) =>
     Effect.tryPromise({
-      try: () =>
-        (pending ??= Effect.runPromise(discover(issuer)).catch((error: unknown) => {
-          pending = undefined
+      try: () => {
+        const known = pending.get(issuer)
+        if (known !== undefined) return known
+        const found = Effect.runPromise(discover(issuer)).catch((error: unknown) => {
+          pending.delete(issuer)
           throw error
-        })),
+        })
+        pending.set(issuer, found)
+        return found
+      },
       catch: toError,
     })
+}
+
+function signInServer(options: Options, discover: Discover): Effect.Effect<Server, Error> {
+  const { issuer, authorizationEndpoint, tokenEndpoint } = options
+  if (issuer !== undefined) return discover(issuer)
+  if (authorizationEndpoint === undefined || tokenEndpoint === undefined) {
+    return Effect.fail(new Error("set issuer, or both authorizationEndpoint and tokenEndpoint"))
+  }
+  return Effect.succeed({ authorizationEndpoint, tokenEndpoint })
+}
+
+// Renewal goes only to the server that issued a credential (RFC 6749 section
+// 10.4), for the resource it was granted for, so the credential's metadata keeps
+// both. Fields this release doesn't know are kept as stored.
+const recordKey = "opencode-oauth"
+const IssuedBy = Schema.Struct({
+  issuer: Schema.optional(Schema.String),
+  tokenEndpoint: Schema.optional(Schema.String),
+  resource: Schema.optional(Schema.String),
+})
+type IssuedBy = typeof IssuedBy.Type
+
+const issuedBy = ({ issuer, tokenEndpoint, resource }: Options): IssuedBy => ({
+  ...(issuer !== undefined ? { issuer } : { tokenEndpoint }),
+  ...(resource !== undefined ? { resource } : {}),
+})
+
+// The one server a record names, if it passes the checks a configured one gets.
+function serverIn({ issuer, tokenEndpoint, resource }: IssuedBy) {
+  if (resource !== undefined && resourceProblem(resource) !== undefined) return undefined
+  if (issuer !== undefined) return tokenEndpoint === undefined && issuerProblem(issuer) === undefined ? { issuer } : undefined
+  return tokenEndpoint !== undefined && endpointProblem(tokenEndpoint) === undefined ? { tokenEndpoint } : undefined
+}
+
+// A credential from before the record renews once from the options, which
+// become its record. Otherwise an option that's set must match the record, and
+// one left unset defers to it.
+function recorded(options: Options, current: Credential.OAuth) {
+  return Effect.gen(function* () {
+    const stored = current.metadata?.[recordKey]
+    const issued = stored === undefined ? issuedBy(options) : Option.getOrUndefined(Schema.decodeUnknownOption(IssuedBy)(stored))
+    const server = issued && serverIn(issued)
+    if (issued === undefined || server === undefined) {
+      return yield* Effect.fail(new Error("the credential's record of the server that issued it is invalid; sign in again"))
+    }
+    if (stored === undefined) return { server, issued, metadata: { ...current.metadata, [recordKey]: issued } }
+    for (const name of ["issuer", "tokenEndpoint", "resource"] as const) {
+      if (options[name] !== undefined && options[name] !== issued[name]) {
+        return yield* Effect.fail(new Error(`${name} has changed since this credential was signed in; sign in again`))
+      }
+    }
+    return { server, issued, metadata: current.metadata }
+  })
 }
 
 function postTokenRequest(client: Client, tokenEndpoint: string, grant: Record<string, string>) {
@@ -276,7 +328,13 @@ function acceptTokenResponse(body: unknown) {
 }
 
 // A refresh may omit refresh_token, which keeps the old one (RFC 6749 section 6).
-function requestToken(client: Client, tokenEndpoint: string, grant: Record<string, string>, previousRefresh?: string) {
+function requestToken(
+  client: Client,
+  tokenEndpoint: string,
+  grant: Record<string, string>,
+  metadata: Credential.OAuth["metadata"],
+  previousRefresh?: string,
+) {
   return Effect.gen(function* () {
     const tokens = yield* postTokenRequest(client, tokenEndpoint, grant).pipe(Effect.flatMap(acceptTokenResponse))
     const refresh = tokens.refresh_token ?? previousRefresh
@@ -291,6 +349,7 @@ function requestToken(client: Client, tokenEndpoint: string, grant: Record<strin
       access: tokens.access_token,
       refresh,
       expires: Math.floor(Date.now() + tokens.expires_in * 1000),
+      ...(metadata !== undefined ? { metadata } : {}),
     })
   })
 }
@@ -302,22 +361,23 @@ function requestToken(client: Client, tokenEndpoint: string, grant: Record<strin
 // new one: the old token is spent, so asking again could only fail.
 const refreshes = new Map<string, Promise<Credential.OAuth>>()
 
-function refreshToken(options: Options, server: () => Effect.Effect<Server, Error>, current: Credential.OAuth) {
+function refreshToken(options: Options, discover: Discover, current: Credential.OAuth) {
   return Effect.tryPromise({
     try: () => {
       const pending = refreshes.get(current.refresh)
       if (pending !== undefined) return pending
       const next = Effect.runPromise(
-        server().pipe(
-          Effect.flatMap(({ tokenEndpoint }) =>
-            requestToken(
-              options,
-              tokenEndpoint,
-              { grant_type: "refresh_token", refresh_token: current.refresh },
-              current.refresh,
-            ),
-          ),
-        ),
+        Effect.gen(function* () {
+          const { server, issued, metadata } = yield* recorded(options, current)
+          const tokenEndpoint = "issuer" in server ? (yield* discover(server.issuer)).tokenEndpoint : server.tokenEndpoint
+          return yield* requestToken(
+            { clientID: options.clientID, resource: issued.resource },
+            tokenEndpoint,
+            { grant_type: "refresh_token", refresh_token: current.refresh },
+            metadata,
+            current.refresh,
+          )
+        }),
       )
       refreshes.set(current.refresh, next)
       const forget = () => refreshes.delete(current.refresh)
@@ -429,12 +489,12 @@ function authorize(options: Options, authServer: Server): Effect.Effect<Integrat
       instructions: "Finish signing in in your browser.",
       callback: Effect.gen(function* () {
         const { code, response } = yield* Deferred.await(received)
-        return yield* requestToken(options, authServer.tokenEndpoint, {
-          grant_type: "authorization_code",
-          code,
-          redirect_uri: redirect,
-          code_verifier: verifier,
-        }).pipe(
+        return yield* requestToken(
+          options,
+          authServer.tokenEndpoint,
+          { grant_type: "authorization_code", code, redirect_uri: redirect, code_verifier: verifier },
+          { [recordKey]: issuedBy(options) },
+        ).pipe(
           Effect.tap(() => Effect.sync(() => reply(response, 200, "Signed in. You can close this tab."))),
           Effect.tapError((error) => Effect.sync(() => reply(response, 400, error.message))),
           Effect.onInterrupt(() => Effect.sync(() => response.destroy())),
@@ -445,11 +505,11 @@ function authorize(options: Options, authServer: Server): Effect.Effect<Integrat
 }
 
 export function registration(options: Options): IntegrationOAuthMethodRegistration {
-  const server = serverFor(options)
+  const discover = discoverer()
   return {
     integrationID: options.provider,
     method: { id: methodID, type: "oauth", label: "Sign in" },
-    authorize: () => server().pipe(Effect.flatMap((authServer) => authorize(options, authServer))),
-    refresh: (current) => refreshToken(options, server, current),
+    authorize: () => signInServer(options, discover).pipe(Effect.flatMap((authServer) => authorize(options, authServer))),
+    refresh: (current) => refreshToken(options, discover, current),
   }
 }

@@ -4,6 +4,7 @@ import type { IntegrationEditor, IntegrationMethodRegistration } from "@opencode
 import type { ModelEditor } from "@opencode/plugin/effect/model"
 import type { WebSearchDefinition, WebSearchEditor } from "@opencode/plugin/effect/websearch"
 import { Effect, Queue, Stream } from "effect"
+import { checkHost, minimumOpenCode } from "../src/host.js"
 import plugin from "../src/index.js"
 import type { Options } from "../src/oauth.js"
 
@@ -18,6 +19,8 @@ const options: Options = {
 
 type Context = Parameters<typeof plugin.effect>[0]
 
+const app = { name: "opencode", version: "2.3.2", channel: "latest" }
+
 describe("plugin", () => {
   test("registers one OAuth method for the provider, the same one on every rerun, and drops the key method", async () => {
     const updates: IntegrationMethodRegistration[] = []
@@ -29,6 +32,7 @@ describe("plugin", () => {
       },
     } as unknown as IntegrationEditor
     const ctx = {
+      app,
       options,
       integration: {
         transform: (callback: (editor: IntegrationEditor) => void) => {
@@ -48,8 +52,30 @@ describe("plugin", () => {
     ])
   })
 
+  test("refuses to load on OpenCode before 2.2.1, before any option error, quoting the host's version", async () => {
+    const ctx = { app: { ...app, version: "2.2.0" }, options: { ...options, tokenEndpoint: "http://auth.example/token" } }
+    const exit = await Effect.runPromiseExit(Effect.scoped(plugin.effect(ctx as unknown as Context)))
+    expect(exit._tag).toBe("Failure")
+    expect(String(exit)).toContain("needs OpenCode 2.2.1 or later; this host reports 2.2.0.")
+    expect(String(exit)).not.toContain("tokenEndpoint")
+  })
+
+  test("refuses releases before 2.2.1, and loads on later ones and on hosts that report no release number", () => {
+    for (const version of ["2.2.0", "2.1.9", "2.0.32", "1.99.99"]) expect(() => checkHost(version)).toThrow(version)
+    for (const version of ["2.2.1", "2.2.10", "2.10.0", "3.0.0", "0.0.0-beta-202611220000", "local", "unknown"]) {
+      expect(() => checkHost(version)).not.toThrow()
+    }
+  })
+
+  test("has one minimum OpenCode: the code's, the peer range's floor and the README's", async () => {
+    const manifest = await Bun.file(new URL("../package.json", import.meta.url)).json()
+    expect(manifest.peerDependencies["@opencode/plugin"]).toBe(`^${minimumOpenCode}`)
+    const readme = await Bun.file(new URL("../README.md", import.meta.url)).text()
+    expect(readme).toContain(`**OpenCode ${minimumOpenCode} or later.**`)
+  })
+
   test("does not load with invalid options, and says why", async () => {
-    const ctx = { options: { ...options, tokenEndpoint: "http://auth.example/token" } }
+    const ctx = { app, options: { ...options, tokenEndpoint: "http://auth.example/token" } }
     const exit = await Effect.runPromiseExit(Effect.scoped(plugin.effect(ctx as unknown as Context)))
     expect(exit._tag).toBe("Failure")
     expect(String(exit)).toContain("tokenEndpoint must be an https URL")
@@ -67,6 +93,7 @@ describe("web search", () => {
       default: { get: () => selection, set: (value) => (selection = value) },
     }
     const ctx = {
+      app,
       options: input,
       integration: {
         transform: () => Effect.succeed({ dispose: Effect.void }),
@@ -199,6 +226,7 @@ describe("model discovery", () => {
         Effect.gen(function* () {
           const events = yield* Queue.unbounded<{ type: string; data: { integrationID?: string } }>()
           const ctx = {
+            app,
             options: { ...options, discoverModels: undefined },
             integration: {
               transform: () => Effect.succeed({ dispose: Effect.void }),

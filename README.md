@@ -17,7 +17,7 @@ bearer. Nothing in the plugin is specific to one identity provider.
 
 ## Requirements
 
-- **OpenCode 2.0.32 or later.** OpenCode 1.x does not load the plugin.
+- **OpenCode 2.2.1 or later.** The plugin refuses to load on an older version.
 - **An authorization server** (identity provider) that your browser and OpenCode
   can both reach. It need not be on the internet: a LAN or a VPN is enough, since
   the server never connects to your machine. It needs a client that:
@@ -134,6 +134,11 @@ The SearXNG instance must allow JSON output (`json` in `search.formats` in its
 - **Sign in again** when the refresh token lapses or the server revokes it. A
   failed renewal does not open the browser: run `/connect` or
   `opencode auth login <provider>` again.
+- **Renewal goes to the server you signed in with,** for the same `resource`,
+  as the credential records them. Setting or changing `issuer`, `tokenEndpoint`
+  or `resource` makes renewal fail until you sign in again, and a removed
+  `resource` is still sent until then. A credential from an earlier release
+  renews once from whatever the options name at that moment, and records it.
 - **During a sign-in only**, the plugin listens on `127.0.0.1` for the redirect,
   and closes the listener as soon as the attempt ends. The listener runs in
   OpenCode's server, so sign in where the browser is: an OpenCode server on
