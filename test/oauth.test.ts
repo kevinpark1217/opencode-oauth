@@ -62,6 +62,16 @@ const bearer = { status: 200, body: { access_token: "access", refresh_token: "re
 const callback = (extra: Record<string, string> = {}) => (url: URL) =>
   fetch(`${redirectOf(url)}?${new URLSearchParams({ code: "the-code", state: url.searchParams.get("state") ?? "", ...extra })}`)
 
+// The browser side of a sign-in whose redirect repeats `name`: the callback's
+// parameters, with `values` appended.
+const repeating =
+  (name: string, values = ["planted", "planted"]) =>
+  (url: URL) => {
+    const query = new URLSearchParams({ code: "the-code", state: url.searchParams.get("state") ?? "" })
+    for (const value of values) query.append(name, value)
+    return fetch(`${redirectOf(url)}?${query}`)
+  }
+
 const failure = (effect: Effect.Effect<unknown, unknown, never>) =>
   Effect.runPromise(Effect.flip(effect)).then((error) => (error instanceof Error ? error.message : String(error)))
 
@@ -188,15 +198,33 @@ describe("sign-in", () => {
     const statuses: number[] = []
     const { credential } = await Effect.runPromise(
       signIn(optionsFor(tokens.url), async (url) => {
-        for (const query of ["code=stolen&state=forged", "error=access_denied&error_description=Phish"]) {
+        const real = url.searchParams.get("state") ?? ""
+        for (const query of [
+          "code=stolen&state=forged",
+          "error=access_denied&error_description=Phish",
+          `code=stolen&state=forged&state=${real}`,
+        ]) {
           statuses.push((await fetch(`${redirectOf(url)}?${query}`)).status)
         }
         return callback()(url)
       }),
     )
-    expect(statuses).toEqual([400, 400])
+    expect(statuses).toEqual([400, 400, 400])
     expect(tokens.forms.map((form) => form.code)).toEqual(["the-code"])
     expect(credential.access).toBe("access")
+  })
+
+  test("refuses a callback that repeats a parameter it reads, and ignores other repeats", async () => {
+    using tokens = tokenEndpoint([bearer, bearer])
+    const options = optionsFor(tokens.url)
+    for (const name of ["state", "code", "error", "error_description"]) {
+      expect(await failure(signIn(options, repeating(name)))).toBe(`Authorization response repeats ${name}`)
+    }
+    expect(tokens.forms).toEqual([])
+    // Without an issuer the callback doesn't read `iss`.
+    for (const name of ["iss", "unrelated"]) {
+      expect((await Effect.runPromise(signIn(options, repeating(name)))).credential.access).toBe("access")
+    }
   })
 
   test("shows a description or error code only when it is short plain text", async () => {
@@ -504,9 +532,15 @@ describe("discovery", () => {
     expect(await failure(signIn(strict.options, callback({ iss: "https://evil.example" })))).toBe(
       "Authorization response came from another issuer",
     )
+    expect(await failure(signIn(strict.options, repeating("iss", [strict.issuer, "https://evil.example"])))).toBe(
+      "Authorization response repeats iss",
+    )
     expect((await Effect.runPromise(signIn(strict.options, callback({ iss: strict.issuer })))).credential.access).toBe("access")
 
     using lenient = authServer({ tokens: [bearer] })
+    expect(await failure(signIn(lenient.options, repeating("iss", [lenient.issuer, "https://evil.example"])))).toBe(
+      "Authorization response repeats iss",
+    )
     expect(await failure(signIn(lenient.options, callback({ iss: "https://evil.example" })))).toBe(
       "Authorization response came from another issuer",
     )

@@ -346,26 +346,33 @@ function authorize(options: Options, authServer: Server): Effect.Effect<Integrat
         reply(response, 400, "Sign-in state does not match")
         return
       }
+      // From here on the redirect is this attempt's own, so a refusal ends the sign-in.
+      const end = (message: string) => {
+        reply(response, 400, message)
+        Effect.runFork(Deferred.fail(received, new Error(message)))
+      }
+      const expected = authServer.issuer
+      // RFC 6749 section 3.1 forbids repeating a parameter, and a repeat could
+      // put a planted value ahead of the real one, such as an `iss` added to the
+      // redirect URI where the server matches redirect URIs loosely. The first
+      // `state` is the one compared above, so a response whose first `state` is
+      // wrong got that 400 and ends nothing; only this attempt's redirect gets here.
+      const repeated = ["state", "code", "error", "error_description", ...(expected === undefined ? [] : ["iss"])].find(
+        (name) => url.searchParams.getAll(name).length > 1,
+      )
+      if (repeated !== undefined) return end(`Authorization response repeats ${repeated}`)
       // Mix-up defense (RFC 9207 section 2.4): a response naming another issuer
       // is refused, and so is one without an issuer from a server that sends it.
       const iss = url.searchParams.get("iss")
-      const expected = authServer.issuer
       if (expected !== undefined && (iss === null ? expected.inResponse : iss !== expected.id)) {
-        const message = iss === null ? "Authorization response has no issuer" : "Authorization response came from another issuer"
-        reply(response, 400, message)
-        Effect.runFork(Deferred.fail(received, new Error(message)))
-        return
+        return end(iss === null ? "Authorization response has no issuer" : "Authorization response came from another issuer")
       }
       const error = url.searchParams.get("error")
       const description = url.searchParams.get("error_description")
       const code = url.searchParams.get("code")
       if (error !== null || description !== null || code === null) {
         const shown = quotable(description, 256) ? description : quotable(error) ? error : undefined
-        const message =
-          shown ?? (error === null && description === null ? "No authorization code" : "Authorization failed")
-        reply(response, 400, message)
-        Effect.runFork(Deferred.fail(received, new Error(message)))
-        return
+        return end(shown ?? (error === null && description === null ? "No authorization code" : "Authorization failed"))
       }
       if (!Effect.runSync(Deferred.succeed(received, { code, response }))) {
         reply(response, 409, "This sign-in has already finished")
