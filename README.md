@@ -153,9 +153,11 @@ The SearXNG instance must allow JSON output (`json` in `search.formats` in its
   sign-in (RFC 6749 section 3.1), so a planted value can't hide the real one.
 - Concurrent renewals of one refresh token share a single request, so a server
   that revokes a reused rotated refresh token does not sign you out.
-- Error messages carry an HTTP status and, only when it is short plain text, the
-  server's OAuth error code, error description, refused token type or metadata
-  issuer; never a response body.
+- Error messages carry an HTTP status and, only when it is short plain text, an
+  OAuth error code, the authorization response's error description, a refused
+  token type or a metadata issuer, always quoted after where it came from; never
+  a response body or the token endpoint's error description, which may echo the
+  code or refresh token.
 
 Report vulnerabilities privately, as [SECURITY.md](SECURITY.md) describes.
 

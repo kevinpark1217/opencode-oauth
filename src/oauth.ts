@@ -238,7 +238,7 @@ function postTokenRequest(client: Client, tokenEndpoint: string, grant: Record<s
       const json: unknown = await response.json().catch(() => undefined)
       if (!response.ok) {
         const code = (json as { error?: unknown } | undefined)?.error
-        throw new Error(`token endpoint answered ${response.status}${quotable(code) ? ` (${code})` : ""}`)
+        throw new Error(`token endpoint answered ${response.status}${quotable(code) ? `: "${code}"` : ""}`)
       }
       return json
     },
@@ -371,8 +371,13 @@ function authorize(options: Options, authServer: Server): Effect.Effect<Integrat
       const description = url.searchParams.get("error_description")
       const code = url.searchParams.get("code")
       if (error !== null || description !== null || code === null) {
-        const shown = quotable(description, 256) ? description : quotable(error) ? error : undefined
-        return end(shown ?? (error === null && description === null ? "No authorization code" : "Authorization failed"))
+        // Whatever sent the redirect wrote these words, so they're quoted rather than
+        // shown as the plugin's own, and not credited to the server (RFC 9207 section 2.4).
+        const named = quotable(error) ? `error "${error}"` : "an error"
+        const detail = quotable(description, 256) ? `: "${description}"` : ""
+        return end(
+          error === null && description === null ? "No authorization code" : `Authorization response carried ${named}${detail}`,
+        )
       }
       if (!Effect.runSync(Deferred.succeed(received, { code, response }))) {
         reply(response, 409, "This sign-in has already finished")
