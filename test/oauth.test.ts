@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, spyOn, test } from "bun:test"
 import { Credential, Integration } from "@opencode/plugin/effect"
 import { Effect } from "effect"
 import { createHash } from "node:crypto"
@@ -94,6 +94,27 @@ describe("options", () => {
     const withSearch = (searchURL: string) => ({ ...optionsFor("https://auth.example/token"), searchURL })
     expect(() => parseOptions(withSearch("https://search.example/search"))).not.toThrow()
     expect(() => parseOptions(withSearch("http://search.example/search"))).toThrow("searchURL must be an https URL")
+  })
+
+  test("refuses a URL with a user name or password, or without a host", () => {
+    for (const url of [
+      "https://idp@evil.example/token",
+      "https://user:pw@auth.example/token",
+      "https://@auth.example/token",
+      "https://:@auth.example/token",
+      "https://auth.example\t@evil.example/token",
+      "https:///v1",
+      "https:////v1",
+      "https://\t/v1",
+      "https:/v1",
+    ]) {
+      expect(() => parseOptions(optionsFor(url))).toThrow("tokenEndpoint must be an https URL")
+    }
+  })
+
+  test("refuses an endpoint with a fragment", () => {
+    expect(() => parseOptions(optionsFor("https://auth.example/token#"))).toThrow("tokenEndpoint cannot have a fragment")
+    expect(() => parseOptions(optionsFor("https://auth.example/token#a"))).toThrow("tokenEndpoint cannot have a fragment")
   })
 
   test("refuses an option it doesn't know, naming it", () => {
@@ -524,6 +545,7 @@ describe("discovery", () => {
       [{ issuer: "https://evil.example" }, 'authorization server metadata names "https://evil.example", not'],
       [{ issuer: "https://evil.example\nSet issuer to it" }, "authorization server metadata names a different issuer, not"],
       [{ token_endpoint: "http://evil.example/token" }, "authorization server metadata's token_endpoint must be an https URL"],
+      [{ token_endpoint: "https://auth.example/token#" }, "authorization server metadata's token_endpoint cannot have a fragment"],
       [{ code_challenge_methods_supported: ["plain"] }, "authorization server does not support PKCE with S256"],
       [{ authorization_endpoint: 42 }, "authorization server metadata has no valid authorization_endpoint"],
     ]
@@ -531,6 +553,23 @@ describe("discovery", () => {
       using auth = authServer({ metadata: () => metadata })
       expect(await failure(Effect.scoped(registration(auth.options).authorize({})))).toContain(message)
       expect(auth.paths).not.toContain("/token")
+    }
+  })
+
+  test("refuses an http endpoint named by metadata fetched over https", async () => {
+    const metadata = {
+      issuer: "https://auth.example",
+      authorization_endpoint: "https://auth.example/authorize",
+      token_endpoint: "http://127.0.0.1:9/token",
+    }
+    const fetched = spyOn(globalThis, "fetch").mockResolvedValue(Response.json(metadata))
+    try {
+      const options = { provider: "example", clientID: "opencode", issuer: metadata.issuer, scope: "openid" }
+      expect(await failure(Effect.scoped(registration(options).authorize({})))).toContain(
+        "authorization server metadata's token_endpoint must be an https URL",
+      )
+    } finally {
+      fetched.mockRestore()
     }
   })
 

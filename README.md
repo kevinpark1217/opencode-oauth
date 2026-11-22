@@ -107,7 +107,9 @@ and `/plugins` names it.
 
 Plain `http` is accepted for `issuer`, the endpoints and `searchURL` only on
 `127.0.0.1` or `[::1]`, and models are listed only from a provider `baseURL`
-that follows the same rule.
+that follows the same rule. Each of these URLs needs a host, and may not carry
+a user name, password or whitespace; the endpoints may not have a fragment, and
+an `https` issuer's metadata must name `https` endpoints.
 
 ### Web search through SearXNG
 
