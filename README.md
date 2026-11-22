@@ -73,7 +73,8 @@ limits, except the context size where vLLM, SGLang or llama.cpp reports one
 there. To change any of this for a model, list it under the provider's
 `models`: what the entry sets wins over what the server reports, and an entry
 that renames a model with `modelID` starts from OpenCode's defaults. Set `model`
-to make one your default.
+to make one your default. The plugin reads the `baseURL` as OpenCode does,
+filling `${NAME}` variables, and logs why when it can't.
 
 Each plugin entry signs in to one provider, and replaces that provider's API key
 method with the sign-in.

@@ -4,6 +4,7 @@ import type { IntegrationEditor, IntegrationMethodRegistration } from "@opencode
 import type { ModelEditor } from "@opencode/plugin/effect/model"
 import type { WebSearchDefinition, WebSearchEditor } from "@opencode/plugin/effect/websearch"
 import { Effect, Queue, Stream } from "effect"
+import { readBaseURL } from "../src/baseurl.js"
 import { checkHost, minimumOpenCode } from "../src/host.js"
 import plugin from "../src/index.js"
 import type { Options } from "../src/oauth.js"
@@ -159,6 +160,38 @@ describe("web search", () => {
   })
 })
 
+describe("baseURL", () => {
+  test("is read as OpenCode reads it, then held to the URL rules", () => {
+    process.env.OPENCODE_OAUTH_TEST_HOST = "https://llm.example/v1/"
+    process.env.OPENCODE_OAUTH_TEST_EMPTY = ""
+    process.env.OPENCODE_OAUTH_TEST_NESTED = "${OPENCODE_OAUTH_TEST_HOST}"
+    try {
+      expect(readBaseURL({ baseURL: "${OPENCODE_OAUTH_TEST_HOST}" })).toEqual({ url: "https://llm.example/v1" })
+      expect(readBaseURL({ baseURL: "https://llm.example${OPENCODE_OAUTH_TEST_EMPTY}/v1//" })).toEqual({
+        url: "https://llm.example/v1",
+      })
+      expect(readBaseURL({ baseURL: "https://bedrock.${AWS_REGION}.example", region: "eu-west-1" })).toEqual({
+        url: "https://bedrock.eu-west-1.example",
+      })
+      expect(readBaseURL({ baseURL: "https://${OPENCODE_OAUTH_TEST_UNSET}/v1" })).toEqual({
+        problem: "the provider's baseURL leaves ${OPENCODE_OAUTH_TEST_UNSET} unfilled",
+      })
+      expect(readBaseURL({ baseURL: "${OPENCODE_OAUTH_TEST_NESTED}" })).toEqual({
+        problem: "the provider's baseURL leaves ${OPENCODE_OAUTH_TEST_HOST} unfilled",
+      })
+      expect(readBaseURL({ baseURL: "" })).toEqual({ problem: "the provider's baseURL is empty" })
+      const insecure = "the provider's baseURL must be an https URL with a host and no user name, password or whitespace"
+      expect(readBaseURL({ baseURL: "https://${OPENCODE_OAUTH_TEST_EMPTY}/v1" })).toEqual({ problem: insecure })
+      expect(readBaseURL({ baseURL: "http://llm.example/v1" })).toEqual({ problem: insecure })
+      expect(readBaseURL({})).toBeUndefined()
+    } finally {
+      delete process.env.OPENCODE_OAUTH_TEST_HOST
+      delete process.env.OPENCODE_OAUTH_TEST_EMPTY
+      delete process.env.OPENCODE_OAUTH_TEST_NESTED
+    }
+  })
+})
+
 describe("model discovery", () => {
   const providerID = Provider.ID.make("example")
   const signedIn = (id: string) => ({ type: "credential", id, label: id, method: "oauth" }) as const
@@ -187,7 +220,7 @@ describe("model discovery", () => {
       readonly loadProvider: () => Effect.Effect<void>
       readonly moveProvider: (path: string) => Effect.Effect<void>
     }) => Effect.Effect<void>,
-    setup: { readonly providerLoaded?: boolean; readonly baseURL?: string } = {},
+    setup: { readonly providerLoaded?: boolean; readonly baseURL?: string | ((origin: string) => string) } = {},
   ) {
     const requests: { path: string; authorization: string | null; showing: string[] }[] = []
     const server = Bun.serve({
@@ -207,7 +240,9 @@ describe("model discovery", () => {
     let transform: ((editor: ModelEditor) => void) | undefined
     const history: { account: string; models: string[] }[] = []
     const models = () => [...shown.keys()]
-    const provider = { id: providerID, settings: { baseURL: setup.baseURL ?? `http://127.0.0.1:${server.port}/v1/` } }
+    const origin = `http://127.0.0.1:${server.port}`
+    const baseURL = typeof setup.baseURL === "function" ? setup.baseURL(origin) : (setup.baseURL ?? `${origin}/v1/`)
+    const provider = { id: providerID, settings: { baseURL } }
     const editor = {
       update: (id: string, model: string, update: (draft: Model.Info) => void) => {
         if (id !== providerID) return
@@ -408,6 +443,34 @@ describe("model discovery", () => {
           expect(models()).toEqual(["configured", "new-model"])
         }),
     ))
+
+  test("lists from a baseURL with a variable, again when it changes, and stays loaded when one goes unset", async () => {
+    process.env.OPENCODE_OAUTH_TEST_API = "v1/"
+    try {
+      await discover(
+        (path) => listing({ id: path === "/v1/models" ? "old-model" : "new-model" }),
+        ({ requests, models, reloaded, moveProvider, providerUpdated }) =>
+          Effect.gen(function* () {
+            yield* reloaded(1)
+            expect(requests.map((request) => request.path)).toEqual(["/v1/models"])
+            expect(models()).toEqual(["configured", "old-model"])
+            process.env.OPENCODE_OAUTH_TEST_API = "v2"
+            yield* providerUpdated()
+            yield* reloaded(3)
+            expect(requests.map((request) => request.path)).toEqual(["/v1/models", "/v2/models"])
+            expect(models()).toEqual(["configured", "new-model"])
+            yield* moveProvider("/${OPENCODE_OAUTH_TEST_UNSET}")
+            expect(models()).toEqual(["configured"])
+            yield* reloaded(4)
+            expect(models()).toEqual(["configured"])
+            expect(requests).toHaveLength(2)
+          }),
+        { baseURL: (origin) => `${origin}/\${OPENCODE_OAUTH_TEST_API}` },
+      )
+    } finally {
+      delete process.env.OPENCODE_OAUTH_TEST_API
+    }
+  })
 
   test("never sends the token to a plain http provider", async () => {
     const original = globalThis.fetch
