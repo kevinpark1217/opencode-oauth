@@ -6,6 +6,7 @@ import type {
 import { Deferred, Effect, Schema, type SchemaIssue, SchemaTransformation, type Scope } from "effect"
 import { createServer, type ServerResponse } from "node:http"
 import { toError } from "./fetch.js"
+import { endpointProblem, issuerProblem, resourceProblem, urlProblem } from "./url.js"
 
 const OptionsSchema = Schema.Struct({
   provider: Schema.NonEmptyString,
@@ -73,31 +74,24 @@ const reservedParams = [
   "code_challenge_method",
 ]
 
-// Codes and tokens cross these; plain http is accepted only to this machine.
-export function secure(value: string) {
-  const url = URL.parse(value)
-  return url?.protocol === "https:" || (url?.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "[::1]"))
-}
-
 export function parseOptions(input: unknown): Options {
   const options = Schema.decodeUnknownSync(OptionsSchema, { onExcessProperty: "error" })(input)
-  for (const name of ["issuer", "authorizationEndpoint", "tokenEndpoint", "searchURL"] as const) {
-    const value = options[name]
-    if (value !== undefined && !secure(value)) throw new Error(`${name} must be an https URL`)
+  const check = (name: string, value: string | undefined, problemOf: (value: string) => string | undefined) => {
+    const problem = value === undefined ? undefined : problemOf(value)
+    if (problem !== undefined) throw new Error(`${name} ${problem}`)
   }
+  check("issuer", options.issuer, issuerProblem)
+  check("authorizationEndpoint", options.authorizationEndpoint, endpointProblem)
+  check("tokenEndpoint", options.tokenEndpoint, endpointProblem)
+  check("searchURL", options.searchURL, urlProblem)
   if (options.issuer !== undefined) {
     if (options.authorizationEndpoint !== undefined || options.tokenEndpoint !== undefined) {
       throw new Error("set issuer, or authorizationEndpoint and tokenEndpoint, not both")
     }
-    // RFC 8414 section 2.
-    if (/[?#]/.test(options.issuer)) throw new Error("issuer cannot have a query or fragment")
   } else if (options.authorizationEndpoint === undefined || options.tokenEndpoint === undefined) {
     throw new Error("set issuer, or both authorizationEndpoint and tokenEndpoint")
   }
-  // RFC 8707 section 2.
-  if (options.resource !== undefined && (URL.parse(options.resource) === null || /[\s#]/.test(options.resource))) {
-    throw new Error("resource must be an absolute URI without a fragment")
-  }
+  check("resource", options.resource, resourceProblem)
   for (const key of Object.keys(options.authorizationParams ?? {})) {
     if (key === "resource") throw new Error("set resource as an option of its own, not in authorizationParams")
     if (reservedParams.includes(key)) throw new Error(`authorizationParams cannot set ${key}`)
@@ -183,7 +177,8 @@ function discover(issuer: string) {
       ["authorization_endpoint", metadata.authorization_endpoint],
       ["token_endpoint", metadata.token_endpoint],
     ] as const) {
-      if (!secure(value)) return yield* Effect.fail(new Error(`authorization server metadata's ${name} must be an https URL`))
+      const problem = endpointProblem(value, found.location)
+      if (problem !== undefined) return yield* Effect.fail(new Error(`authorization server metadata's ${name} ${problem}`))
     }
     const methods = metadata.code_challenge_methods_supported
     if (methods !== undefined && !methods.includes("S256")) {

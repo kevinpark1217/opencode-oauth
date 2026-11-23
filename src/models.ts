@@ -1,7 +1,7 @@
 import { type Plugin, Provider } from "@opencode/plugin/effect"
 import { Effect, Option, Queue, Schema, Stream } from "effect"
 import { getJSON } from "./fetch.js"
-import { secure } from "./oauth.js"
+import { urlProblem } from "./url.js"
 
 const ModelList = Schema.Struct({ data: Schema.Array(Schema.Unknown) })
 const isModel = Schema.is(Schema.Struct({ id: Schema.NonEmptyString }))
@@ -65,7 +65,8 @@ export function discoverModels(ctx: Plugin.Context, providerID: string) {
 
     const list = (to: NonNullable<Effect.Success<typeof target>>) =>
       Effect.gen(function* () {
-        if (!secure(to.baseURL)) return yield* Effect.fail(new Error("the provider's baseURL must be an https URL"))
+        const problem = urlProblem(to.baseURL)
+        if (problem !== undefined) return yield* Effect.fail(new Error(`the provider's baseURL ${problem}`))
         const credential = yield* ctx.integration.connection.resolve(to.connection)
         if (credential?.type !== "oauth") return undefined
         return yield* listModels(to.baseURL, credential.access)
