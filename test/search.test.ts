@@ -76,13 +76,17 @@ describe("search", () => {
   test("does not follow a redirect with the token", async () => {
     using elsewhere = searxng(() => Response.json({ results: [] }))
     using stub = searxng(() => Response.redirect(elsewhere.url, 302))
-    await Effect.runPromise(Effect.flip(search(stub.url, "q", "access-token")))
+    const error = await Effect.runPromise(Effect.flip(search(stub.url, "q", "access-token")))
+    expect(error.message).toBe("search answered with a redirect, which the plugin does not follow")
     expect(elsewhere.requests).toHaveLength(0)
   })
 
   test("rejects a success that is not SearXNG's JSON", async () => {
-    using stub = searxng(() => new Response("<html>search page</html>", { status: 200 }))
-    const error = await Effect.runPromise(Effect.flip(search(stub.url, "q", "access-token")))
-    expect(error.message).toBe("search returned no usable results")
+    const responses = [new Response("<html>search page</html>", { status: 200 }), Response.json({ hits: [] })]
+    using stub = searxng(() => responses.shift() ?? new Response(null, { status: 500 }))
+    for (const message of ["search did not answer with JSON", "search returned no usable results"]) {
+      const error = await Effect.runPromise(Effect.flip(search(stub.url, "q", "access-token")))
+      expect(error.message).toBe(message)
+    }
   })
 })

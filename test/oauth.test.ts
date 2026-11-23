@@ -444,17 +444,62 @@ describe("refresh", () => {
   test("does not follow a redirect with the refresh token", async () => {
     using elsewhere = tokenEndpoint([])
     using tokens = tokenEndpoint([new Response(null, { status: 307, headers: { Location: elsewhere.url } })])
-    await refresher(optionsFor(tokens.url)).error()
+    expect(await refresher(optionsFor(tokens.url)).error()).toBe(
+      "token endpoint answered with a redirect, which the plugin does not follow",
+    )
     expect(tokens.forms).toHaveLength(1)
     expect(elsewhere.forms).toHaveLength(0)
+  })
+
+  test("reports a timeout, an untrusted certificate or an unreachable host without the runtime's message", async () => {
+    const untrusted =
+      "token endpoint has a certificate that isn't trusted; for a private CA, set NODE_EXTRA_CA_CERTS to its certificate file"
+    const coded = (error: Error, code: string) => Object.assign(error, { code })
+    const cases: Array<[Error, string]> = [
+      [new DOMException("The operation timed out.", "TimeoutError"), "token endpoint did not answer within 30 s"],
+      [coded(new TypeError("self signed certificate"), "DEPTH_ZERO_SELF_SIGNED_CERT"), untrusted],
+      [new TypeError("fetch failed", { cause: coded(new Error("self-signed certificate"), "SELF_SIGNED_CERT_IN_CHAIN") }), untrusted],
+      [
+        coded(new TypeError("certificate has expired"), "CERT_HAS_EXPIRED"),
+        "token endpoint has an invalid certificate, such as an expired one or one for another name",
+      ],
+      [coded(new TypeError("getaddrinfo ENOTFOUND auth.example"), "ENOTFOUND"), "token endpoint could not be reached"],
+    ]
+    for (const [error, message] of cases) {
+      const fetched = spyOn(globalThis, "fetch").mockRejectedValue(error)
+      try {
+        expect(await refresher(optionsFor("https://auth.example/token")).error()).toBe(message)
+      } finally {
+        fetched.mockRestore()
+      }
+    }
+  })
+
+  test("reports an error's status even when its body breaks off", async () => {
+    const server = Bun.listen({
+      hostname: "127.0.0.1",
+      port: 0,
+      socket: {
+        data(socket) {
+          socket.end('HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{"error":')
+        },
+      },
+    })
+    try {
+      expect(await refresher(optionsFor(`http://127.0.0.1:${server.port}/token`)).error()).toBe("token endpoint answered 400")
+    } finally {
+      server.stop(true)
+    }
   })
 
   test("rejects a success that carries no token, and names a missing access_token", async () => {
     using tokens = tokenEndpoint([
       new Response("<html>login</html>", { status: 200 }),
+      { status: 200, body: [] },
       { status: 200, body: { expires_in: 900, token_type: "Bearer" } },
     ])
     const refresh = refresher(optionsFor(tokens.url))
+    expect(await refresh.error()).toBe("token endpoint did not answer with JSON")
     expect(await refresh.error()).toBe("token endpoint returned no JSON token response")
     expect(await refresh.error()).toBe("token endpoint's response has no valid access_token")
   })
@@ -553,6 +598,21 @@ describe("discovery", () => {
       using auth = authServer({ metadata: () => metadata })
       expect(await failure(Effect.scoped(registration(auth.options).authorize({})))).toContain(message)
       expect(auth.paths).not.toContain("/token")
+    }
+  })
+
+  test("does not follow a redirect for metadata", async () => {
+    using elsewhere = authServer()
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.redirect(elsewhere.issuer, 302) })
+    try {
+      const issuer = `http://127.0.0.1:${server.port}`
+      const options = { provider: "example", clientID: "opencode", issuer, scope: "openid" }
+      expect(await failure(Effect.scoped(registration(options).authorize({})))).toBe(
+        `authorization server metadata at ${issuer}/.well-known/openid-configuration answered with a redirect, which the plugin does not follow`,
+      )
+      expect(elsewhere.paths).toEqual([])
+    } finally {
+      server.stop(true)
     }
   })
 

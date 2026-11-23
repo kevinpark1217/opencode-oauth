@@ -5,7 +5,7 @@ import type {
 } from "@opencode/plugin/effect/integration"
 import { Deferred, Effect, Schema, type SchemaIssue, SchemaTransformation, type Scope } from "effect"
 import { createServer, type ServerResponse } from "node:http"
-import { toError } from "./fetch.js"
+import { deadline, explain, type Failure, fetchJSON } from "./fetch.js"
 import { endpointProblem, issuerProblem, resourceProblem, urlProblem } from "./url.js"
 
 const OptionsSchema = Schema.Struct({
@@ -99,6 +99,8 @@ export function parseOptions(input: unknown): Options {
   return options
 }
 
+const toError = (cause: unknown) => (cause instanceof Error ? cause : new Error(String(cause)))
+
 // A hung token endpoint must not hold every model call behind a shared refresh.
 const tokenRequestTimeoutMs = 30_000
 
@@ -138,46 +140,66 @@ function metadataLocations(issuer: string) {
   return [`${url.origin}${path}/.well-known/openid-configuration`, `${url.origin}/.well-known/oauth-authorization-server${path}`]
 }
 
+type LookupFailure =
+  | { readonly reason: "fetch"; readonly location: string; readonly failure: Failure }
+  | { readonly reason: "none" }
+  | { readonly reason: "invalid"; readonly location: string; readonly field: string | undefined }
+  | { readonly reason: "another issuer"; readonly named: string }
+
+function lookup(issuer: string): Effect.Effect<{ location: string; metadata: typeof Metadata.Type }, LookupFailure> {
+  return Effect.gen(function* () {
+    const within = deadline(discoveryTimeoutMs)
+    for (const location of metadataLocations(issuer)) {
+      const body = yield* fetchJSON(location, { headers: { Accept: "application/json" } }, within).pipe(
+        Effect.catchIf((failure) => failure.reason === "status" && failure.status === 404, () => Effect.succeed(undefined)),
+        Effect.mapError((failure): LookupFailure => ({ reason: "fetch", location, failure })),
+      )
+      if (body === undefined) continue
+      const metadata = yield* Schema.decodeUnknownEffect(Metadata)(body).pipe(
+        Effect.mapError(
+          (error): LookupFailure => ({ reason: "invalid", location, field: failedField(error.issue, Object.keys(Metadata.fields)) }),
+        ),
+      )
+      // RFC 8414 section 3.3, OpenID Connect Discovery section 4.3.
+      if (metadata.issuer !== issuer) return yield* Effect.fail<LookupFailure>({ reason: "another issuer", named: metadata.issuer })
+      return { location, metadata }
+    }
+    return yield* Effect.fail<LookupFailure>({ reason: "none" })
+  })
+}
+
+// A configured issuer is the user's own, so its location and value are named.
+function lookupError(issuer: string, failure: LookupFailure): Error {
+  switch (failure.reason) {
+    case "fetch":
+      // The budget spans both locations, so a timeout belongs to the issuer.
+      return new Error(
+        `authorization server metadata ${failure.failure.reason === "timeout" ? `for ${issuer}` : `at ${failure.location}`} ` +
+          explain(failure.failure),
+      )
+    case "none":
+      return new Error(`no authorization server metadata for ${issuer}`)
+    case "invalid":
+      return new Error(
+        failure.field === undefined
+          ? `${failure.location} returned no authorization server metadata`
+          : `authorization server metadata has no valid ${failure.field}`,
+      )
+    case "another issuer": {
+      const named = quotable(failure.named, 256) ? `"${failure.named}"` : "a different issuer"
+      return new Error(`authorization server metadata names ${named}, not "${issuer}"`)
+    }
+  }
+}
+
 function discover(issuer: string) {
   return Effect.gen(function* () {
-    const found = yield* Effect.tryPromise({
-      try: async (signal) => {
-        const deadline = AbortSignal.any([signal, AbortSignal.timeout(discoveryTimeoutMs)])
-        for (const location of metadataLocations(issuer)) {
-          const response = await fetch(location, {
-            headers: { Accept: "application/json" },
-            redirect: "error",
-            signal: deadline,
-          })
-          if (response.status === 404) continue
-          if (!response.ok) throw new Error(`authorization server metadata at ${location} answered ${response.status}`)
-          return { location, body: (await response.json().catch(() => undefined)) as unknown }
-        }
-        throw new Error(`no authorization server metadata for ${issuer}`)
-      },
-      catch: (cause) =>
-        toError(cause, `authorization server metadata for ${issuer} did not answer within ${discoveryTimeoutMs / 1000} s`),
-    })
-    const metadata = yield* Schema.decodeUnknownEffect(Metadata)(found.body).pipe(
-      Effect.mapError((error) => {
-        const field = failedField(error.issue, Object.keys(Metadata.fields))
-        return new Error(
-          field === undefined
-            ? `${found.location} returned no authorization server metadata`
-            : `authorization server metadata has no valid ${field}`,
-        )
-      }),
-    )
-    // RFC 8414 section 3.3, OpenID Connect Discovery section 4.3.
-    if (metadata.issuer !== issuer) {
-      const named = quotable(metadata.issuer, 256) ? `"${metadata.issuer}"` : "a different issuer"
-      return yield* Effect.fail(new Error(`authorization server metadata names ${named}, not "${issuer}"`))
-    }
+    const { location, metadata } = yield* lookup(issuer).pipe(Effect.mapError((failure) => lookupError(issuer, failure)))
     for (const [name, value] of [
       ["authorization_endpoint", metadata.authorization_endpoint],
       ["token_endpoint", metadata.token_endpoint],
     ] as const) {
-      const problem = endpointProblem(value, found.location)
+      const problem = endpointProblem(value, location)
       if (problem !== undefined) return yield* Effect.fail(new Error(`authorization server metadata's ${name} ${problem}`))
     }
     const methods = metadata.code_challenge_methods_supported
@@ -216,29 +238,19 @@ function serverFor(options: Options): () => Effect.Effect<Server, Error> {
 }
 
 function postTokenRequest(client: Client, tokenEndpoint: string, grant: Record<string, string>) {
-  return Effect.tryPromise({
-    try: async (signal): Promise<unknown> => {
-      const body = new URLSearchParams({ ...grant, client_id: client.clientID })
-      // RFC 8707 section 2.2 lets a server limit a code or refresh token to the
-      // resource it was granted for, and some refuse a request that omits it.
-      if (client.resource !== undefined) body.set("resource", client.resource)
-      const response = await fetch(tokenEndpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
-        body,
-        // The body carries a code or a refresh token: never follow it elsewhere.
-        redirect: "error",
-        signal: AbortSignal.any([signal, AbortSignal.timeout(tokenRequestTimeoutMs)]),
-      })
-      const json: unknown = await response.json().catch(() => undefined)
-      if (!response.ok) {
-        const code = (json as { error?: unknown } | undefined)?.error
-        throw new Error(`token endpoint answered ${response.status}${quotable(code) ? `: "${code}"` : ""}`)
-      }
-      return json
-    },
-    catch: (cause) => toError(cause, `token endpoint did not answer within ${tokenRequestTimeoutMs / 1000} s`),
-  })
+  const body = new URLSearchParams({ ...grant, client_id: client.clientID })
+  // RFC 8707 section 2.2 lets a server limit a code or refresh token to the
+  // resource it was granted for, and some refuse a request that omits it.
+  if (client.resource !== undefined) body.set("resource", client.resource)
+  const headers = { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" }
+  return Effect.suspend(() =>
+    fetchJSON(tokenEndpoint, { method: "POST", headers, body }, deadline(tokenRequestTimeoutMs)),
+  ).pipe(
+    Effect.mapError((failure) => {
+      const code = failure.reason === "status" ? failure.error : undefined
+      return new Error(`token endpoint ${explain(failure)}${quotable(code) ? `: "${code}"` : ""}`)
+    }),
+  )
 }
 
 // OpenCode sends the token as Bearer, and a client must not use a token type it
