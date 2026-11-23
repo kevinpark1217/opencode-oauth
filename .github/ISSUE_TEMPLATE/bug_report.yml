@@ -8,7 +8,7 @@ body:
       label: What happened
       description: The steps you took, what you saw, and what you expected. Quote error messages exactly.
       placeholder: |
-        Ran `opencode auth login my-llm` and signed in. The browser tab said "token endpoint answered 400 (invalid_grant)".
+        Ran `opencode auth login my-llm` and signed in. The browser tab showed: token endpoint answered 400: "invalid_grant"
         Expected the sign-in to finish.
     validations:
       required: true

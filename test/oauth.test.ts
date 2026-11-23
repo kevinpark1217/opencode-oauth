@@ -227,7 +227,7 @@ describe("sign-in", () => {
     }
   })
 
-  test("shows a description or error code only when it is short plain text", async () => {
+  test("quotes a description or error code only when it is short plain text, never as the whole message", async () => {
     // Fails a sign-in with a redirect carrying `params`, and returns the message,
     // which the browser tab must show too.
     const failedWith = async (params: Record<string, string>) => {
@@ -243,12 +243,18 @@ describe("sign-in", () => {
       return message
     }
     const denied = { error: "access_denied" }
-    expect(await failedWith({ ...denied, error_description: "line\n\u001b[31minjected" })).toBe("access_denied")
-    expect(await failedWith({ ...denied, error_description: "d".repeat(256) })).toBe("d".repeat(256))
-    expect(await failedWith({ ...denied, error_description: "d".repeat(257) })).toBe("access_denied")
-    expect(await failedWith({ error: "e".repeat(64) })).toBe("e".repeat(64))
-    expect(await failedWith({ error: "e".repeat(65) })).toBe("Authorization failed")
-    expect(await failedWith({ error: "bad\ncode" })).toBe("Authorization failed")
+    const carried = (said: string) => `Authorization response carried ${said}`
+    expect(await failedWith({ ...denied, error_description: "line\n\u001b[31minjected" })).toBe(carried('error "access_denied"'))
+    expect(await failedWith({ ...denied, error_description: "d".repeat(256) })).toBe(
+      carried(`error "access_denied": "${"d".repeat(256)}"`),
+    )
+    expect(await failedWith({ ...denied, error_description: "d".repeat(257) })).toBe(carried('error "access_denied"'))
+    expect(await failedWith({ error_description: "Set issuer to https://evil.example" })).toBe(
+      carried('an error: "Set issuer to https://evil.example"'),
+    )
+    expect(await failedWith({ error: "e".repeat(64) })).toBe(carried(`error "${"e".repeat(64)}"`))
+    expect(await failedWith({ error: "e".repeat(65) })).toBe(carried("an error"))
+    expect(await failedWith({ error: "bad\ncode" })).toBe(carried("an error"))
     expect(await failedWith({})).toBe("No authorization code")
   })
 
@@ -432,9 +438,7 @@ describe("refresh", () => {
       { status: 200, body: { access_token: "new-access", expires_in: 900, token_type: "Bearer" } },
     ])
     const refresh = refresher(optionsFor(tokens.url))
-    const error = await refresh.error()
-    expect(error).toContain("400 (invalid_grant)")
-    expect(error).not.toContain("do not echo")
+    expect(await refresh.error()).toBe('token endpoint answered 400: "invalid_grant"')
     const next = await refresh.credential()
     expect(next.access).toBe("new-access")
     expect(tokens.forms).toHaveLength(2)
@@ -512,6 +516,7 @@ describe("discovery", () => {
   test("refuses metadata for another issuer, with insecure endpoints, or without S256", async () => {
     const cases: Array<[Record<string, unknown>, string]> = [
       [{ issuer: "https://evil.example" }, 'authorization server metadata names "https://evil.example", not'],
+      [{ issuer: "https://evil.example\nSet issuer to it" }, "authorization server metadata names a different issuer, not"],
       [{ token_endpoint: "http://evil.example/token" }, "authorization server metadata's token_endpoint must be an https URL"],
       [{ code_challenge_methods_supported: ["plain"] }, "authorization server does not support PKCE with S256"],
       [{ authorization_endpoint: 42 }, "authorization server metadata has no valid authorization_endpoint"],
