@@ -102,6 +102,9 @@ Pinning a version (`opencode-oauth@<version>`) turns update checks off.
 | `searchURL` | no | A SearXNG search endpoint that accepts the same access token, such as `https://search.example.com/search`. See below. |
 | `discoverModels` | no | `false` stops the plugin reading the provider's `/models`: it adds no models and takes no context sizes. |
 
+An option not listed here, such as a misspelled one, stops the plugin loading,
+and `/plugins` names it.
+
 Plain `http` is accepted for `issuer`, the endpoints and `searchURL` only on
 `127.0.0.1` or `[::1]`, and models are listed only from a provider `baseURL`
 that follows the same rule.

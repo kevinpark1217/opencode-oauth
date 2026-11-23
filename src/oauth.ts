@@ -80,7 +80,7 @@ export function secure(value: string) {
 }
 
 export function parseOptions(input: unknown): Options {
-  const options = Schema.decodeUnknownSync(OptionsSchema)(input)
+  const options = Schema.decodeUnknownSync(OptionsSchema, { onExcessProperty: "error" })(input)
   for (const name of ["issuer", "authorizationEndpoint", "tokenEndpoint", "searchURL"] as const) {
     const value = options[name]
     if (value !== undefined && !secure(value)) throw new Error(`${name} must be an https URL`)
