@@ -46,13 +46,14 @@ function signIn(options: Options, browser: (authorization: URL) => Promise<Respo
 
 const redirectOf = (url: URL) => url.searchParams.get("redirect_uri") ?? ""
 
-const credentialWith = (refresh: string) =>
+const credentialWith = (refresh: string, metadata?: Record<string, unknown>) =>
   Credential.OAuth.make({
     type: "oauth",
     methodID: Integration.MethodID.make("oauth"),
     access: "old-access",
     refresh,
     expires: Date.now(),
+    ...(metadata !== undefined ? { metadata } : {}),
   })
 
 const bearer = { status: 200, body: { access_token: "access", refresh_token: "refresh", expires_in: 900, token_type: "Bearer" } }
@@ -564,6 +565,86 @@ function authServer(
   const options: Options = { provider: "example", clientID: "opencode", issuer, scope: "openid offline_access" }
   return { origin, issuer, options, paths, forms, [Symbol.dispose]: () => server.stop(true) }
 }
+
+describe("the record of the server that issued a credential", () => {
+  const renew = (options: Options, current: Credential.OAuth) =>
+    registration(options).refresh?.(current) ?? Effect.die("no refresh")
+  const withRecord = (record: unknown, other: Record<string, unknown> = {}) =>
+    credentialWith(`refresh-${crypto.randomUUID()}`, { ...other, "opencode-oauth": record })
+
+  test("is written at sign-in: the issuer or the token endpoint, and the resource", async () => {
+    using tokens = tokenEndpoint([bearer])
+    const resource = "https://api.example/llm"
+    const configured = await Effect.runPromise(signIn({ ...optionsFor(tokens.url), resource }, callback()))
+    expect(configured.credential.metadata).toEqual({ "opencode-oauth": { tokenEndpoint: tokens.url, resource } })
+    using auth = authServer({ tokens: [bearer] })
+    const discovered = await Effect.runPromise(signIn(auth.options, callback()))
+    expect(discovered.credential.metadata).toEqual({ "opencode-oauth": { issuer: auth.issuer } })
+  })
+
+  test("is kept as stored across renewals, with other metadata and fields it doesn't know", async () => {
+    using tokens = tokenEndpoint([bearer, bearer])
+    const current = withRecord({ tokenEndpoint: tokens.url, added: "later" }, { other: 1 })
+    const first = await Effect.runPromise(renew(optionsFor(tokens.url), current))
+    const second = await Effect.runPromise(renew(optionsFor(tokens.url), first))
+    expect(second.metadata).toEqual(current.metadata)
+    expect(tokens.forms).toHaveLength(2)
+  })
+
+  test("is written at the first renewal of a credential from before it", async () => {
+    using tokens = tokenEndpoint([bearer])
+    const next = await Effect.runPromise(renew(optionsFor(tokens.url), credentialWith(`refresh-${crypto.randomUUID()}`)))
+    expect(next.metadata).toEqual({ "opencode-oauth": { tokenEndpoint: tokens.url } })
+  })
+
+  test("refuses a renewal when a set option differs from the record, naming the option", async () => {
+    using tokens = tokenEndpoint([])
+    const resource = "https://api.example/llm"
+    const byIssuer = { provider: "example", clientID: "opencode", issuer: "https://b.example", scope: "openid" }
+    const cases: Array<[unknown, Options, string]> = [
+      [{ issuer: "https://a.example" }, byIssuer, "issuer"],
+      [{ tokenEndpoint: tokens.url }, byIssuer, "issuer"],
+      [{ issuer: "https://b.example" }, optionsFor(tokens.url), "tokenEndpoint"],
+      [{ tokenEndpoint: "https://auth.example/token" }, optionsFor(tokens.url), "tokenEndpoint"],
+      [{ tokenEndpoint: tokens.url, resource }, { ...optionsFor(tokens.url), resource: "https://api.example/other" }, "resource"],
+      [{ tokenEndpoint: tokens.url }, { ...optionsFor(tokens.url), resource }, "resource"],
+    ]
+    for (const [record, options, name] of cases) {
+      expect(await failure(renew(options, withRecord(record)))).toBe(
+        `${name} has changed since this credential was signed in; sign in again`,
+      )
+    }
+    expect(tokens.forms).toHaveLength(0)
+  })
+
+  test("refuses a renewal from a record that doesn't decode or fails the checks of a configured server", async () => {
+    using tokens = tokenEndpoint([])
+    for (const record of [
+      "https://auth.example",
+      { tokenEndpoint: 42 },
+      {},
+      { issuer: "https://auth.example", tokenEndpoint: tokens.url },
+      { issuer: "http://evil.example" },
+      { issuer: "https://auth.example?tenant=a" },
+      { tokenEndpoint: "https://idp@evil.example/token" },
+      { tokenEndpoint: `${tokens.url}#` },
+      { tokenEndpoint: tokens.url, resource: "api.example/llm" },
+    ]) {
+      expect(await failure(renew(optionsFor(tokens.url), withRecord(record)))).toBe(
+        "the credential's record of the server that issued it is invalid; sign in again",
+      )
+    }
+    expect(tokens.forms).toHaveLength(0)
+  })
+
+  test("keeps sending a recorded resource after the option is removed", async () => {
+    using tokens = tokenEndpoint([bearer])
+    const resource = "https://api.example/llm"
+    const current = withRecord({ tokenEndpoint: tokens.url, resource })
+    await Effect.runPromise(renew(optionsFor(tokens.url), current))
+    expect(tokens.forms).toEqual([{ grant_type: "refresh_token", refresh_token: current.refresh, client_id: "opencode", resource }])
+  })
+})
 
 describe("discovery", () => {
   test("signs in with the endpoints from the issuer's OpenID Connect metadata", async () => {
