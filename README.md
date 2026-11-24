@@ -57,7 +57,11 @@ Add the plugin and the provider to your OpenCode config
     "my-llm": {
       "name": "My LLM",
       "package": "@opencode/ai/providers/openai-compatible",
-      "settings": { "baseURL": "https://llm.example.com/v1" }
+      "settings": { "baseURL": "https://llm.example.com/v1" },
+      // Optional: a model, by its ID, for what its server doesn't report.
+      "models": {
+        "qwen3": { "name": "Qwen3", "settings": { "reasoningEffort": "high" } }
+      }
     }
   }
 }
@@ -67,14 +71,14 @@ Then sign in once, with `/connect` in the TUI or `opencode auth login my-llm`.
 The browser opens your identity provider, and after you sign in the tab says so.
 OpenCode renews the token on its own from then on.
 
-The plugin then adds the models that the provider's `/models` lists, named by
-their IDs, with no reasoning-effort variants. Each has OpenCode's default
-limits, except the context size where vLLM, SGLang or llama.cpp reports one
-there. To change any of this for a model, list it under the provider's
-`models`: what the entry sets wins over what the server reports, and an entry
-that renames a model with `modelID` starts from OpenCode's defaults. Set `model`
-to make one your default. The plugin reads the `baseURL` as OpenCode does,
-filling `${NAME}` variables, and logs why when it can't.
+The plugin adds the models that the provider's `/models` lists, named by their
+IDs, with the context size vLLM, SGLang or llama.cpp reports and OpenCode's
+defaults otherwise. A model you list under `models` keeps that context unless
+its entry sets a `limit`, and also gets OpenCode's reasoning-effort variants; an
+entry under another key that sets `modelID` starts from OpenCode's defaults.
+Set `model` to `"my-llm/<model ID>"` to make one your default. The plugin reads
+the `baseURL` as OpenCode does, filling `${NAME}` variables, and logs why when
+it can't.
 
 Each plugin entry signs in to one provider, and replaces that provider's API key
 method with the sign-in.
