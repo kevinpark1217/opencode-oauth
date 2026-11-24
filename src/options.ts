@@ -37,12 +37,14 @@ export function parseOptions(input: unknown): Options {
   check("authorizationEndpoint", options.authorizationEndpoint, endpointProblem)
   check("tokenEndpoint", options.tokenEndpoint, endpointProblem)
   check("searchURL", options.searchURL, urlProblem)
-  if (options.issuer !== undefined) {
-    if (options.authorizationEndpoint !== undefined || options.tokenEndpoint !== undefined) {
-      throw new Error("set issuer, or authorizationEndpoint and tokenEndpoint, not both")
-    }
-  } else if (options.authorizationEndpoint === undefined || options.tokenEndpoint === undefined) {
-    throw new Error("set issuer, or both authorizationEndpoint and tokenEndpoint")
+  const endpoints = [options.authorizationEndpoint, options.tokenEndpoint].filter((value) => value !== undefined).length
+  if (options.issuer !== undefined && endpoints > 0) {
+    throw new Error("set issuer, or authorizationEndpoint and tokenEndpoint, not both")
+  }
+  if (endpoints === 1) {
+    throw new Error(
+      "set both authorizationEndpoint and tokenEndpoint, or leave out both and issuer for the plugin to find the server from the provider's API",
+    )
   }
   check("resource", options.resource, resourceProblem)
   for (const key of Object.keys(options.authorizationParams ?? {})) {

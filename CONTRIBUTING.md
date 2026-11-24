@@ -19,7 +19,7 @@ To try a checkout in OpenCode, run `bun pm pack` and set the plugin's `package` 
 
 ## Making a change
 
-- Fix the cause, not the symptom. OAuth code follows the specs (RFC 6749, 6750, 7636, 8252, 8414, 8707, 9207, 9700), and tokens, codes and response bodies never go into errors or logs.
+- Fix the cause, not the symptom. OAuth code follows the specs (RFC 6749, 6750, 7636, 8252, 8414, 8707, 9207, 9700, 9728), and tokens, codes and response bodies never go into errors or logs. One deviation is deliberate: a single loopback `/callback` serves every authorization server, where RFC 8252 section 8.10 asks for one per server, and the issuer in the response (RFC 9207) tells them apart instead.
 - Add a test only when it would catch a real bug or security issue, and check that it fails without your change.
 - Add a comment only when it says something the code can't, such as why it's done this way or what a spec requires.
 - Update `README.md` when behavior, options or requirements change. Don't add other doc files.

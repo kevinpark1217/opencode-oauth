@@ -2,8 +2,32 @@ import { describe, expect, spyOn, test } from "bun:test"
 import { Credential, Integration } from "@opencode/plugin/effect"
 import { Effect } from "effect"
 import { createHash } from "node:crypto"
+import type { PluginContext } from "../src/discovery.js"
 import { registration } from "../src/oauth.js"
 import { type Options, parseOptions } from "../src/options.js"
+
+// OpenCode's side of the plugin: plugin storage in memory, failing where asked,
+// and the provider's settings, which discovery reads its baseURL from.
+function hostWith(input: { settings?: Record<string, unknown>; storage?: Map<string, unknown>; failing?: "get" | "set" } = {}) {
+  const storage = input.storage ?? new Map<string, unknown>()
+  const broken = (operation: "get" | "set") => input.failing === operation
+  const host = {
+    provider: {
+      get: () =>
+        input.settings === undefined
+          ? Effect.fail(new Error("Provider not found"))
+          : Effect.succeed({ data: { id: "example", settings: input.settings } }),
+    },
+    storage: {
+      get: (key: string) => (broken("get") ? Effect.die(new Error("storage down")) : Effect.sync(() => storage.get(key))),
+      set: (key: string, value: unknown) =>
+        broken("set") ? Effect.die(new Error("storage down")) : Effect.sync(() => void storage.set(key, value)),
+      remove: (key: string) =>
+        broken("set") ? Effect.die(new Error("storage down")) : Effect.sync(() => void storage.delete(key)),
+    },
+  }
+  return Object.assign(host as unknown as PluginContext, { stored: storage })
+}
 
 // A token endpoint that records each form it receives and answers with the next
 // scripted response.
@@ -31,8 +55,8 @@ const optionsFor = (tokenURL: string): Options => ({
 
 // Starts a sign-in, lets `browser` answer the authorization URL, and returns
 // what the attempt produced; the attempt's scope is closed before it returns.
-function signIn(options: Options, browser: (authorization: URL) => Promise<Response>) {
-  const method = registration(options)
+function signIn(options: Options, browser: (authorization: URL) => Promise<Response>, host: PluginContext = hostWith()) {
+  const method = registration(host, options)
   return Effect.scoped(
     Effect.gen(function* () {
       const authorization = yield* method.authorize({})
@@ -80,7 +104,7 @@ const failure = (effect: Effect.Effect<unknown, unknown, never>) =>
 // Refreshes one credential repeatedly. Each call sends a new request as long as
 // the server does not rotate the refresh token.
 function refresher(options: Options) {
-  const method = registration(options)
+  const method = registration(hostWith(), options)
   const current = credentialWith(`refresh-${crypto.randomUUID()}`)
   const run = () => method.refresh?.(current) ?? Effect.die("no refresh")
   return { method, current, credential: () => Effect.runPromise(run()), error: () => failure(run()) }
@@ -129,7 +153,7 @@ describe("options", () => {
     )
   })
 
-  test("takes an issuer instead of the endpoints, but not both", () => {
+  test("takes an issuer or the endpoints, not both, or neither for discovery", () => {
     const base = { provider: "example", clientID: "opencode", scope: "openid" }
     expect(() => parseOptions({ ...base, issuer: "https://auth.example/realms/a" })).not.toThrow()
     expect(() => parseOptions({ ...base, issuer: "http://auth.example" })).toThrow("issuer must be an https URL")
@@ -140,8 +164,10 @@ describe("options", () => {
       "set issuer, or authorizationEndpoint and tokenEndpoint, not both",
     )
     expect(() => parseOptions({ ...base, tokenEndpoint: "https://auth.example/t" })).toThrow(
-      "set issuer, or both authorizationEndpoint and tokenEndpoint",
+      "set both authorizationEndpoint and tokenEndpoint, or leave out both and issuer",
     )
+    expect(() => parseOptions(base)).not.toThrow()
+    expect(() => parseOptions({ ...base, issuer: "" })).toThrow('at ["issuer"]')
   })
 
   test("refuses authorizationParams that would replace the grant's own", () => {
@@ -342,7 +368,7 @@ describe("sign-in", () => {
   test("closes the loopback listener when the attempt ends", async () => {
     const redirect = await Effect.runPromise(
       Effect.scoped(
-        Effect.map(registration(optionsFor("https://auth.example/token")).authorize({}), (authorization) =>
+        Effect.map(registration(hostWith(), optionsFor("https://auth.example/token")).authorize({}), (authorization) =>
           redirectOf(new URL(authorization.url)),
         ),
       ),
@@ -606,7 +632,7 @@ function authServer(
 
 describe("the record of the server that issued a credential", () => {
   const renew = (options: Options, current: Credential.OAuth) =>
-    registration(options).refresh?.(current) ?? Effect.die("no refresh")
+    registration(hostWith(), options).refresh?.(current) ?? Effect.die("no refresh")
   const withRecord = (record: unknown, other: Record<string, unknown> = {}) =>
     credentialWith(`refresh-${crypto.randomUUID()}`, { ...other, "opencode-oauth": record })
 
@@ -715,7 +741,7 @@ describe("issuer metadata", () => {
     ]
     for (const [metadata, message] of cases) {
       using auth = authServer({ metadata: () => metadata })
-      expect(await failure(Effect.scoped(registration(auth.options).authorize({})))).toContain(message)
+      expect(await failure(Effect.scoped(registration(hostWith(), auth.options).authorize({})))).toContain(message)
       expect(auth.paths).not.toContain("/token")
     }
   })
@@ -726,7 +752,7 @@ describe("issuer metadata", () => {
     try {
       const issuer = `http://127.0.0.1:${server.port}`
       const options = { provider: "example", clientID: "opencode", issuer, scope: "openid" }
-      expect(await failure(Effect.scoped(registration(options).authorize({})))).toBe(
+      expect(await failure(Effect.scoped(registration(hostWith(), options).authorize({})))).toBe(
         `authorization server metadata at ${issuer}/.well-known/openid-configuration answered with a redirect, which the plugin does not follow`,
       )
       expect(elsewhere.paths).toEqual([])
@@ -744,7 +770,7 @@ describe("issuer metadata", () => {
     const fetched = spyOn(globalThis, "fetch").mockResolvedValue(Response.json(metadata))
     try {
       const options = { provider: "example", clientID: "opencode", issuer: metadata.issuer, scope: "openid" }
-      expect(await failure(Effect.scoped(registration(options).authorize({})))).toContain(
+      expect(await failure(Effect.scoped(registration(hostWith(), options).authorize({})))).toContain(
         "authorization server metadata's token_endpoint must be an https URL",
       )
     } finally {
@@ -789,5 +815,278 @@ describe("issuer metadata", () => {
       "/.well-known/openid-configuration",
       "/.well-known/openid-configuration",
     ])
+  })
+})
+
+// An API that publishes its protected resource metadata (RFC 9728) at the
+// well-known path for a baseURL ending in `path`.
+function api(document: (identifier: string) => unknown, path = "/v1") {
+  const paths: string[] = []
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(request): Response {
+      const requested = new URL(request.url).pathname
+      paths.push(requested)
+      if (requested !== `/.well-known/oauth-protected-resource${path}`) return new Response(null, { status: 404 })
+      return Response.json(document(identifier))
+    },
+  })
+  const identifier: string = `http://127.0.0.1:${server.port}${path}`
+  return { identifier, paths, [Symbol.dispose]: () => server.stop(true) }
+}
+
+describe("finding the server from the API", () => {
+  const options: Options = { provider: "example", clientID: "opencode" }
+  const advice = "; set issuer to your identity provider's issuer, as its administrator gives it"
+  // An identity provider that discovery accepts: RFC 9207, S256 and offline_access.
+  const identityProvider = (tokens: Array<{ status: number; body: unknown }> = [bearer]) =>
+    authServer({
+      metadata: () => ({ authorization_response_iss_parameter_supported: true, scopes_supported: ["openid", "offline_access"] }),
+      tokens,
+    })
+  const naming = (issuer: string, extra: Record<string, unknown> = {}) => (identifier: string) => ({
+    resource: identifier,
+    authorization_servers: [issuer],
+    scopes_supported: ["models:read"],
+    ...extra,
+  })
+  const signInWith = (host: PluginContext, issuer: string) => signIn(options, callback({ iss: issuer }), host)
+  const failing = (host: PluginContext) => failure(Effect.scoped(registration(host, options).authorize({})))
+  const renew = (method: ReturnType<typeof registration>, current: Credential.OAuth) =>
+    method.refresh?.(current) ?? Effect.die("no refresh")
+
+  test("finds the server from the API, for a baseURL with or without a path, and records and binds it", async () => {
+    for (const path of ["/v1", ""]) {
+      using auth = identityProvider()
+      // A server listed twice is still one server.
+      using llm = api((identifier) => ({ ...naming(auth.issuer)(identifier), authorization_servers: [auth.issuer, auth.issuer] }), path)
+      const host = hostWith({ settings: { baseURL: `${llm.identifier}/` } })
+      const { url, credential } = await Effect.runPromise(signInWith(host, auth.issuer))
+      expect(llm.paths).toEqual([`/.well-known/oauth-protected-resource${path}`])
+      expect(url.searchParams.get("resource")).toBe(llm.identifier)
+      expect(url.searchParams.get("scope")).toBe("models:read offline_access")
+      expect(auth.forms[0]?.resource).toBe(llm.identifier)
+      expect(credential.metadata).toEqual({ "opencode-oauth": { issuer: auth.issuer, resource: llm.identifier } })
+      expect(host.stored.get("binding/example")).toBe(auth.issuer)
+    }
+  })
+
+  test("stops with the advice to set issuer, and never prints the server the API names", async () => {
+    using auth = authServer({ metadata: () => ({ authorization_response_iss_parameter_supported: true }) })
+    using unsigned = authServer()
+    const flagged = { authorization_response_iss_parameter_supported: true }
+    using impostor = authServer({ metadata: () => ({ ...flagged, issuer: "https://evil.example" }) })
+    using incomplete = authServer({ metadata: () => ({ ...flagged, token_endpoint: 42 }) })
+    using fragmented = authServer({ metadata: (issuer) => ({ ...flagged, token_endpoint: `${issuer}/token#` }) })
+    expect(await failing(hostWith({ settings: {} }))).toBe(
+      `the provider has no baseURL to find the authorization server from${advice}`,
+    )
+    expect(await failing(hostWith({ settings: { baseURL: `${auth.origin}/v1?tenant=a` } }))).toBe(
+      `the provider's baseURL has a query or fragment, so it can't name the API as a resource${advice}`,
+    )
+    expect(await failing(hostWith())).toBe("no provider named example is configured")
+    const documents: Array<[(identifier: string) => unknown, string]> = [
+      [() => ({ resource: "https://elsewhere.example", authorization_servers: [auth.issuer] }), "describes another resource"],
+      [(identifier) => ({ resource: identifier }), "names no authorization server"],
+      [(identifier) => ({ resource: identifier, authorization_servers: [auth.issuer, unsigned.issuer] }), "names more than one authorization server"],
+      [naming(`${auth.issuer}?tenant=a`), "the API names an authorization server whose issuer the plugin can't use"],
+      [naming(unsigned.issuer), "the authorization server the API names doesn't put its issuer in responses (RFC 9207)"],
+      [naming(`${auth.origin}/missing`), "the authorization server the API names publishes no metadata"],
+      [naming(impostor.issuer), "the authorization server the API names has metadata for another issuer"],
+      [() => ["https://evil.example"], "the API has no valid resource metadata"],
+      [(identifier) => ({ resource: identifier, authorization_servers: "https://evil.example" }), "the API's resource metadata has no valid authorization_servers"],
+      [naming(incomplete.issuer), "the authorization server the API names has no valid token_endpoint"],
+      [naming(fragmented.issuer), "the token_endpoint of the authorization server the API names cannot have a fragment"],
+    ]
+    for (const [document, message] of documents) {
+      using llm = api(document)
+      const error = await failing(hostWith({ settings: { baseURL: llm.identifier } }))
+      expect(error).toContain(message)
+      expect(error.endsWith(advice)).toBe(true)
+      for (const named of [auth, unsigned, impostor, incomplete, fragmented]) expect(error).not.toContain(named.origin)
+      expect(error).not.toContain("evil.example")
+    }
+    using missing = api(() => ({}), "/elsewhere")
+    const unpublished = `${missing.identifier.replace("/elsewhere", "")}/v1`
+    expect(await failing(hostWith({ settings: { baseURL: unpublished } }))).toBe(`the API's resource metadata answered 404${advice}`)
+    expect(await failing(hostWith({ settings: { baseURL: "" } }))).toBe(`the provider's baseURL is empty${advice}`)
+    // A redirect from the named server is refused without saying where it pointed.
+    const redirecting = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.redirect("https://elsewhere.example/", 302) })
+    try {
+      using llm = api(naming(`http://127.0.0.1:${redirecting.port}`))
+      const error = await failing(hostWith({ settings: { baseURL: llm.identifier } }))
+      expect(error).toBe(
+        `the metadata of the authorization server the API names answered with a redirect, which the plugin does not follow${advice}`,
+      )
+    } finally {
+      redirecting.stop(true)
+    }
+  })
+
+  test("defaults scope to the API's scopes, refuses a list it can't request, and lets the options override both", async () => {
+    using auth = identityProvider([bearer, bearer, bearer])
+    const scopeOf = async (extra: Record<string, unknown>, set: Partial<Options> = {}) => {
+      using llm = api(naming(auth.issuer, extra))
+      const host = hostWith({ settings: { baseURL: llm.identifier } })
+      const { url } = await Effect.runPromise(signIn({ ...options, ...set }, callback({ iss: auth.issuer }), host))
+      return { scope: url.searchParams.get("scope"), resource: url.searchParams.get("resource") }
+    }
+    expect((await scopeOf({ scopes_supported: [] })).scope).toBeNull()
+    using strict = authServer({
+      metadata: () => ({ authorization_response_iss_parameter_supported: true, scopes_supported: [1, "offline_access"] }),
+      tokens: [bearer],
+    })
+    using withoutOffline = api(naming(strict.issuer))
+    const strictSignIn = signIn(options, callback({ iss: strict.issuer }), hostWith({ settings: { baseURL: withoutOffline.identifier } }))
+    expect((await Effect.runPromise(strictSignIn)).url.searchParams.get("scope")).toBe("models:read")
+    expect((await scopeOf({ scopes_supported: ["a", "a", "offline_access"] })).scope).toBe("a offline_access")
+    const pinned = await scopeOf({ scopes_supported: ["bad scope"] }, { scope: "openid", resource: "urn:example:llm" })
+    expect(pinned).toMatchObject({ scope: "openid", resource: "urn:example:llm" })
+    for (const scopes of [["bad scope"], ["a".repeat(2049)], "models:read", null]) {
+      using llm = api(naming(auth.issuer, { scopes_supported: scopes }))
+      expect(await failing(hostWith({ settings: { baseURL: llm.identifier } }))).toBe(
+        "the API lists scopes the plugin can't request; set the scope option",
+      )
+    }
+  })
+
+  test("needs a server that lists S256, from https when the API's document came over https", async () => {
+    using auth = authServer({
+      metadata: () => ({ authorization_response_iss_parameter_supported: true, code_challenge_methods_supported: undefined }),
+    })
+    using llm = api(naming(auth.issuer))
+    expect(await failing(hostWith({ settings: { baseURL: llm.identifier } }))).toBe(
+      `the authorization server the API names doesn't list PKCE with S256${advice}`,
+    )
+    const fetched = spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({ resource: "https://api.example/v1", authorization_servers: ["http://127.0.0.1:9"] }),
+    )
+    try {
+      expect(await failing(hostWith({ settings: { baseURL: "https://api.example/v1" } }))).toBe(
+        `the API names an authorization server whose issuer the plugin can't use${advice}`,
+      )
+    } finally {
+      fetched.mockRestore()
+    }
+  })
+
+  test("stops for an API that needs a token OpenCode can't send", async () => {
+    using auth = identityProvider()
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ dpop_bound_access_tokens_required: true }, "the API requires DPoP-bound access tokens, which OpenCode can't send"],
+      [{ bearer_methods_supported: ["body"] }, "the API doesn't accept the access token in the Authorization header"],
+      [{ bearer_methods_supported: [] }, "the API doesn't accept the access token in the Authorization header"],
+    ]
+    for (const [extra, message] of cases) {
+      using llm = api(naming(auth.issuer, extra))
+      expect(await failing(hostWith({ settings: { baseURL: llm.identifier } }))).toStartWith(message)
+    }
+    expect(auth.paths).toEqual([])
+  })
+
+  test("binds the provider to its last completed sign-in, and refuses another server before contacting it", async () => {
+    using first = identityProvider([bearer, bearer])
+    using second = identityProvider()
+    using llm = api(naming(first.issuer))
+    const stored = new Map<string, unknown>()
+    const host = hostWith({ settings: { baseURL: llm.identifier }, storage: stored })
+    // An attempt that never finishes binds nothing.
+    await Effect.runPromise(Effect.scoped(registration(host, options).authorize({})))
+    expect(stored.size).toBe(0)
+    await Effect.runPromise(signInWith(host, first.issuer))
+    await Effect.runPromise(signInWith(host, first.issuer))
+    expect(stored.get("binding/example")).toBe(first.issuer)
+    using moved = api(naming(second.issuer))
+    expect(await failing(hostWith({ settings: { baseURL: moved.identifier }, storage: stored }))).toBe(
+      "the API now names a different authorization server than this provider signed in with before; if that's expected" +
+        advice.replace(";", ","),
+    )
+    expect(second.paths).toEqual([])
+  })
+
+  test("stores a configured issuer as the binding, and removes it for configured endpoints", async () => {
+    using auth = authServer({ tokens: [bearer] })
+    using tokens = tokenEndpoint([bearer])
+    using llm = api(naming("https://unused.example"))
+    const stored = new Map<string, unknown>([["binding/example", "https://old.example"]])
+    const host = hostWith({ settings: { baseURL: llm.identifier }, storage: stored })
+    await Effect.runPromise(signIn(auth.options, callback(), host))
+    expect(stored.get("binding/example")).toBe(auth.issuer)
+    await Effect.runPromise(signIn(optionsFor(tokens.url), callback(), host))
+    expect(stored.has("binding/example")).toBe(false)
+    expect(llm.paths).toEqual([])
+  })
+
+  test("keeps the binding when storing fails, and stops when it can't be read", async () => {
+    using auth = identityProvider()
+    using llm = api(naming(auth.issuer))
+    const stored = new Map<string, unknown>()
+    const settings = { baseURL: llm.identifier }
+    const { credential } = await Effect.runPromise(signInWith(hostWith({ settings, storage: stored, failing: "set" }), auth.issuer))
+    expect(credential.access).toBe("access")
+    expect(stored.size).toBe(0)
+    stored.set("binding/example", auth.issuer)
+    const unreadable = `the plugin couldn't read which authorization server this provider signed in with before${advice}`
+    expect(await failing(hostWith({ settings, storage: stored, failing: "get" }))).toBe(unreadable)
+    expect(await failing(hostWith({ settings, storage: new Map([["binding/example", 42]]) }))).toBe(unreadable)
+  })
+
+  test("renews from the record without the API, and asks for a sign-in without one", async () => {
+    using auth = identityProvider([bearer, bearer])
+    let named = auth.issuer
+    using llm = api((identifier) => naming(named)(identifier))
+    const host = hostWith({ settings: { baseURL: llm.identifier } })
+    const { credential } = await Effect.runPromise(signInWith(host, auth.issuer))
+    // Even an API that now names another server doesn't move renewal.
+    named = "https://elsewhere.example"
+    const fetchedBefore = llm.paths.length
+    const renewed = await Effect.runPromise(renew(registration(host, options), credential))
+    expect(renewed.access).toBe("access")
+    expect(llm.paths).toHaveLength(fetchedBefore)
+    expect(auth.forms[1]).toMatchObject({ grant_type: "refresh_token", resource: llm.identifier })
+    const unrecorded = credentialWith(`refresh-${crypto.randomUUID()}`)
+    expect(await failure(renew(registration(host, options), unrecorded))).toBe(
+      "the credential has no record of the server that issued it; sign in again",
+    )
+  })
+
+  test("fetches the server's metadata afresh at each discovery sign-in, and renews with what it fetched", async () => {
+    let tokenPath = "/token"
+    using auth = authServer({
+      metadata: (issuer) => ({
+        authorization_response_iss_parameter_supported: true,
+        token_endpoint: `${issuer}${tokenPath}`,
+      }),
+      tokens: [bearer],
+    })
+    using llm = api(naming(auth.issuer))
+    const method = registration(hostWith({ settings: { baseURL: llm.identifier } }), options)
+    const recorded = { "opencode-oauth": { issuer: auth.issuer } }
+    await Effect.runPromise(renew(method, credentialWith(`refresh-${crypto.randomUUID()}`, recorded)))
+    tokenPath = "/moved"
+    await Effect.runPromise(Effect.scoped(method.authorize({})))
+    await failure(renew(method, credentialWith(`refresh-${crypto.randomUUID()}`, recorded)))
+    expect(auth.paths.filter((path) => path.includes("well-known"))).toHaveLength(2)
+    expect(auth.paths.at(-1)).toBe("/moved")
+  })
+
+  test("keeps the named server out of a DNS failure and a refused code exchange", async () => {
+    using unreachable = api(naming("https://auth.invalid"))
+    const original = globalThis.fetch
+    const fetched = spyOn(globalThis, "fetch").mockImplementation(((input: string | URL | Request, init?: RequestInit) =>
+      String(input).startsWith("https://auth.invalid")
+        ? Promise.reject(Object.assign(new TypeError("getaddrinfo ENOTFOUND auth.invalid"), { code: "ENOTFOUND" }))
+        : original(input, init)) as typeof fetch)
+    try {
+      const error = await failing(hostWith({ settings: { baseURL: unreachable.identifier } }))
+      expect(error).toBe(`the metadata of the authorization server the API names could not be reached${advice}`)
+    } finally {
+      fetched.mockRestore()
+    }
+    using refusing = identityProvider([{ status: 400, body: { error: "invalid_grant" } }])
+    using llm = api(naming(refusing.issuer))
+    const error = await failure(signInWith(hostWith({ settings: { baseURL: llm.identifier } }), refusing.issuer))
+    expect(error).toBe('token endpoint answered 400: "invalid_grant"')
   })
 })
