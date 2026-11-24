@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.6.0](https://github.com/kevinpark1217/opencode-oauth/compare/v0.5.0...v0.6.0) (2026-11-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* the plugin needs OpenCode 2.2.1 or later and refuses to load on an older version. After changing a configured issuer, tokenEndpoint or resource, sign in again.
+* an issuer, endpoint or searchURL is now refused when it has a user name or password, whitespace, or no host right after the scheme's //, as is an authorization or token endpoint with a fragment and an http endpoint in an https issuer's metadata; models are no longer listed from such a provider baseURL. Fix the URL the error names.
+* the plugin no longer loads when its options include one it doesn't know; /plugins names the option, so fix or remove it.
+* an authorization response that repeats state, code, error, error_description, or iss when an issuer is expected now fails sign-in (RFC 6749 section 3.1).
+
+### Features
+
+* make scope optional ([#60](https://github.com/kevinpark1217/opencode-oauth/issues/60)) ([1c47ad6](https://github.com/kevinpark1217/opencode-oauth/commit/1c47ad6e774ddbe27bba46913a53e212bd7dac83))
+
+
+### Bug Fixes
+
+* cap the size of JSON responses ([#61](https://github.com/kevinpark1217/opencode-oauth/issues/61)) ([7429af7](https://github.com/kevinpark1217/opencode-oauth/commit/7429af72b9371b07f4e4aac54d05406e0eb27e9f))
+* quote server-supplied text in errors instead of showing it as the whole message ([#55](https://github.com/kevinpark1217/opencode-oauth/issues/55)) ([b879a11](https://github.com/kevinpark1217/opencode-oauth/commit/b879a114ed42ae8254fa449a60bace706339715a))
+* read the provider's baseURL the way OpenCode does ([#62](https://github.com/kevinpark1217/opencode-oauth/issues/62)) ([3c59792](https://github.com/kevinpark1217/opencode-oauth/commit/3c59792b1b3cc4b5b3aa6ab45d8e577081fbcfc9))
+* record which server issued each credential, and renew only there ([#59](https://github.com/kevinpark1217/opencode-oauth/issues/59)) ([fd07d49](https://github.com/kevinpark1217/opencode-oauth/commit/fd07d49feb9c33600fe64328e7d3a24e8526c778))
+* refuse an authorization response that repeats a parameter ([#54](https://github.com/kevinpark1217/opencode-oauth/issues/54)) ([02d3be2](https://github.com/kevinpark1217/opencode-oauth/commit/02d3be26ab273d1c911e76b6804296db8ead718d))
+* refuse unknown plugin options ([#56](https://github.com/kevinpark1217/opencode-oauth/issues/56)) ([5c0ad57](https://github.com/kevinpark1217/opencode-oauth/commit/5c0ad57d5f4d830102b89d518cf0b652acc2a430))
+* report fetch failures as typed reasons instead of the runtime's error message ([#58](https://github.com/kevinpark1217/opencode-oauth/issues/58)) ([9a00c02](https://github.com/kevinpark1217/opencode-oauth/commit/9a00c028d4fff049c689d49c2c06805115d09c48))
+* tighten the URLs the plugin accepts ([#57](https://github.com/kevinpark1217/opencode-oauth/issues/57)) ([35c516b](https://github.com/kevinpark1217/opencode-oauth/commit/35c516ba8b74e9a87e885259d050c81e061256be))
+
 ## [0.5.0](https://github.com/kevinpark1217/opencode-oauth/compare/v0.4.0...v0.5.0) (2026-11-20)
 
 
