@@ -95,7 +95,7 @@ Pinning a version (`opencode-oauth@<version>`) turns update checks off.
 | `clientID` | yes | The client ID registered with the authorization server. |
 | `issuer` | yes, or both endpoints | The authorization server's issuer, such as `https://auth.example.com/realms/example`. The plugin reads the endpoints from the server's metadata (OpenID Connect Discovery or RFC 8414). |
 | `authorizationEndpoint`, `tokenEndpoint` | instead of `issuer` | The endpoints themselves, for a server that publishes no metadata, or whose metadata names a different issuer. |
-| `scope` | yes | The scopes to request, space-separated. Include what gets you a refresh token. |
+| `scope` | no | The scopes to request, space-separated, such as `openid offline_access`. Include what gets you a refresh token. Unset, the plugin requests no scope of its own, which leaves the choice to the server; set, it replaces the server's default. |
 | `resource` | no | The API the access token is for, such as `https://llm.example.com`, for a server that issues tokens per resource (RFC 8707). It is sent with the sign-in and every token request, so sign in again after changing it. |
 | `port` | no | The loopback redirect's port. Unset or `0` lets the OS pick one. |
 | `authorizationParams` | no | Extra parameters for the authorization request, such as `{ "audience": "https://llm.example.com" }` for a server that picks the access token's audience from one. It cannot set `resource`, or replace the parameters the grant sets itself. |
