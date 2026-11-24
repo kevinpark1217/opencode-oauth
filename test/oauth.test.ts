@@ -2,7 +2,8 @@ import { describe, expect, spyOn, test } from "bun:test"
 import { Credential, Integration } from "@opencode/plugin/effect"
 import { Effect } from "effect"
 import { createHash } from "node:crypto"
-import { type Options, parseOptions, registration } from "../src/oauth.js"
+import { registration } from "../src/oauth.js"
+import { type Options, parseOptions } from "../src/options.js"
 
 // A token endpoint that records each form it receives and answers with the next
 // scripted response.
@@ -615,8 +616,8 @@ describe("the record of the server that issued a credential", () => {
     const configured = await Effect.runPromise(signIn({ ...optionsFor(tokens.url), resource }, callback()))
     expect(configured.credential.metadata).toEqual({ "opencode-oauth": { tokenEndpoint: tokens.url, resource } })
     using auth = authServer({ tokens: [bearer] })
-    const discovered = await Effect.runPromise(signIn(auth.options, callback()))
-    expect(discovered.credential.metadata).toEqual({ "opencode-oauth": { issuer: auth.issuer } })
+    const byIssuer = await Effect.runPromise(signIn(auth.options, callback()))
+    expect(byIssuer.credential.metadata).toEqual({ "opencode-oauth": { issuer: auth.issuer } })
   })
 
   test("is kept as stored across renewals, with other metadata and fields it doesn't know", async () => {
@@ -683,7 +684,7 @@ describe("the record of the server that issued a credential", () => {
   })
 })
 
-describe("discovery", () => {
+describe("issuer metadata", () => {
   test("signs in with the endpoints from the issuer's OpenID Connect metadata", async () => {
     using auth = authServer({ path: "/application/o/app/", tokens: [bearer] })
     const { url, credential } = await Effect.runPromise(signIn(auth.options, callback()))
