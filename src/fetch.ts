@@ -1,4 +1,78 @@
 import { Effect } from "effect"
+import { brotliDecompress, gunzip, inflate, zstdDecompress } from "node:zlib"
+
+// Far above any real response; OpenRouter's model list is about 0.9 MB.
+const maxBody = 4 * 1024 * 1024
+
+// Asks for an uncompressed body and takes any body as sent: Bun inflates a
+// compressed one in full even after the reader stops, so a few KB of brotli
+// could take gigabytes. `decompress` is Bun's own option.
+function request(url: string | URL, init: RequestInit) {
+  const headers = new Headers(init.headers)
+  headers.set("Accept-Encoding", "identity")
+  return fetch(url, { ...init, headers, decompress: false })
+}
+
+type Decoder = (
+  body: Buffer,
+  options: { maxOutputLength: number },
+  callback: (error: Error | null, result: Buffer) => void,
+) => void
+
+// Asynchronous, so a body crafted to decode slowly doesn't stall OpenCode.
+const decoding = (decoder: Decoder) => (body: Buffer) =>
+  new Promise<Buffer>((resolve, reject) =>
+    decoder(body, { maxOutputLength: maxBody }, (error, result) => (error ? reject(error) : resolve(result))),
+  )
+const decoders = new Map([
+  ["gzip", decoding(gunzip)],
+  ["x-gzip", decoding(gunzip)],
+  ["deflate", decoding(inflate)],
+  ["br", decoding(brotliDecompress)],
+  ["zstd", decoding(zstdDecompress)],
+])
+
+type Refusal = "too large" | "undecodable"
+
+// Counts the body as it arrives, so a huge or endless one is cut off rather than
+// held whole (leaving the loop cancels the rest), and decodes it with the same
+// limit on what it decodes to. Servers code a body once at most, so one coded
+// more than once is refused rather than decoded layer by layer.
+async function readBody(response: Response): Promise<{ readonly text: string } | { readonly refused: Refusal }> {
+  const codings = (response.headers.get("content-encoding") ?? "")
+    .split(",")
+    .map((coding) => coding.trim().toLowerCase())
+    .filter((coding) => coding !== "" && coding !== "identity")
+  const decode = codings.length === 1 ? decoders.get(codings[0]!) : undefined
+  if (codings.length > 0 && decode === undefined) {
+    await response.body?.cancel()
+    return { refused: "undecodable" }
+  }
+  const chunks: Uint8Array[] = []
+  let size = 0
+  for await (const chunk of response.body ?? []) {
+    size += chunk.byteLength
+    if (size > maxBody) return { refused: "too large" }
+    chunks.push(chunk)
+  }
+  let body: Buffer = Buffer.concat(chunks)
+  if (decode !== undefined) {
+    try {
+      body = await decode(body)
+    } catch (error) {
+      return { refused: (error as { code?: unknown }).code === "ERR_BUFFER_TOO_LARGE" ? "too large" : "undecodable" }
+    }
+  }
+  return { text: new TextDecoder().decode(body) }
+}
+
+const parseJSON = (text: string): unknown => {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return undefined
+  }
+}
 
 // Starts when created, so requests made under one share its time.
 export const deadline = (ms: number) => ({ signal: AbortSignal.timeout(ms), seconds: ms / 1000 })
@@ -9,7 +83,7 @@ type Deadline = ReturnType<typeof deadline>
 export type Failure =
   | { readonly reason: "status"; readonly status: number; readonly error: string | undefined }
   | { readonly reason: "timeout"; readonly seconds: number }
-  | { readonly reason: "redirect" | "not JSON" | "untrusted" | "invalid certificate" | "unreachable" }
+  | { readonly reason: Refusal | "redirect" | "not JSON" | "untrusted" | "invalid certificate" | "unreachable" }
 
 // What a private CA's certificate fails with, by OpenSSL's names. Bun puts the
 // code on the error, Node on its cause.
@@ -32,30 +106,27 @@ function classify(cause: unknown, { seconds }: Deadline): Failure {
   return { reason: /CERT|HOSTNAME_MISMATCH/.test(code) ? "invalid certificate" : "unreachable" }
 }
 
-const parseJSON = (text: string): unknown => {
-  try {
-    return JSON.parse(text)
-  } catch {
-    return undefined
-  }
-}
-
 const isRedirect = (status: number) => status >= 300 && status < 400
 
 // Every request the plugin makes. It reports a failure by its kind, never with
 // the runtime's message, which names the host. A redirect is refused by its
 // status, so a code or token in the request never goes to its target. An error's
-// body is read only for its code, so a broken one still reports the status.
+// body is read only for its code, so a broken, oversized or undecodable one
+// still reports the status.
 export function fetchJSON(url: string | URL, init: RequestInit, within: Deadline): Effect.Effect<unknown, Failure> {
   return Effect.tryPromise({
     try: async (signal): Promise<{ readonly body: unknown } | Failure> => {
-      const response = await fetch(url, { ...init, redirect: "manual", signal: AbortSignal.any([signal, within.signal]) })
+      const response = await request(url, { ...init, redirect: "manual", signal: AbortSignal.any([signal, within.signal]) })
       if (isRedirect(response.status)) return { reason: "redirect" }
       if (!response.ok) {
-        const error = (parseJSON(await response.text().catch(() => "")) as { error?: unknown } | null | undefined)?.error
+        const read = await readBody(response).catch(() => undefined)
+        const body = read !== undefined && "text" in read ? parseJSON(read.text) : undefined
+        const error = (body as { error?: unknown } | null | undefined)?.error
         return { reason: "status", status: response.status, error: typeof error === "string" ? error : undefined }
       }
-      const body = parseJSON(await response.text())
+      const read = await readBody(response)
+      if ("refused" in read) return { reason: read.refused }
+      const body = parseJSON(read.text)
       return body === undefined ? { reason: "not JSON" } : { body }
     },
     catch: (cause) => classify(cause, within),
@@ -77,6 +148,10 @@ export function explain(failure: Failure): string {
       return `did not answer within ${failure.seconds} s`
     case "redirect":
       return "answered with a redirect, which the plugin does not follow"
+    case "too large":
+      return `answered with more than ${maxBody / 1024 / 1024} MiB`
+    case "undecodable":
+      return "answered with a body the plugin can't decode"
     case "not JSON":
       return "did not answer with JSON"
     case "untrusted":

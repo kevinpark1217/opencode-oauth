@@ -507,6 +507,18 @@ describe("refresh", () => {
     }
   })
 
+  test("refuses a response over 4 MiB, counted on its decoded size, and one it can't decode", async () => {
+    const gzip = { "Content-Type": "application/json", "Content-Encoding": "gzip" }
+    const body = { access_token: "a".repeat(4 * 1024 * 1024), expires_in: 900, token_type: "Bearer" }
+    const huge = Bun.gzipSync(JSON.stringify(body))
+    expect(huge.byteLength).toBeLessThan(64 * 1024)
+    // Not valid gzip: had the runtime inflated it, the error would be its own.
+    using tokens = tokenEndpoint([new Response(huge, { headers: gzip }), new Response("not gzip", { headers: gzip })])
+    const refresh = refresher(optionsFor(tokens.url))
+    expect(await refresh.error()).toBe("token endpoint answered with more than 4 MiB")
+    expect(await refresh.error()).toBe("token endpoint answered with a body the plugin can't decode")
+  })
+
   test("rejects a success that carries no token, and names a missing access_token", async () => {
     using tokens = tokenEndpoint([
       new Response("<html>login</html>", { status: 200 }),

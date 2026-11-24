@@ -5,12 +5,13 @@ import { search } from "../src/search.js"
 // A SearXNG that records each request's URL and bearer, and answers with
 // `respond`'s response.
 function searxng(respond: () => Response) {
-  const requests: Array<{ url: string; authorization: string | null }> = []
+  const requests: Array<{ url: string; authorization: string | null; encoding: string | null }> = []
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     fetch(request) {
-      requests.push({ url: request.url, authorization: request.headers.get("authorization") })
+      const { headers } = request
+      requests.push({ url: request.url, authorization: headers.get("authorization"), encoding: headers.get("accept-encoding") })
       return respond()
     },
   })
@@ -79,6 +80,25 @@ describe("search", () => {
     const error = await Effect.runPromise(Effect.flip(search(stub.url, "q", "access-token")))
     expect(error.message).toBe("search answered with a redirect, which the plugin does not follow")
     expect(elsewhere.requests).toHaveLength(0)
+  })
+
+  test("refuses a response over 4 MiB", async () => {
+    using stub = searxng(() => Response.json({ results: [result(0, { content: "a".repeat(4 * 1024 * 1024) })] }))
+    const error = await Effect.runPromise(Effect.flip(search(stub.url, "q", "access-token")))
+    expect(error.message).toBe("search answered with more than 4 MiB")
+  })
+
+  test("asks for an uncompressed body, reads a compressed one, and refuses one coded twice", async () => {
+    const body = JSON.stringify({ results: [result(0)] })
+    const responses = [
+      new Response(Bun.gzipSync(body), { headers: { "Content-Encoding": "gzip" } }),
+      new Response(Bun.gzipSync(Bun.gzipSync(body)), { headers: { "Content-Encoding": "gzip, gzip" } }),
+    ]
+    using stub = searxng(() => responses.shift() ?? new Response(null, { status: 500 }))
+    expect(await Effect.runPromise(search(stub.url, "q", "access-token"))).toHaveLength(1)
+    const error = await Effect.runPromise(Effect.flip(search(stub.url, "q", "access-token")))
+    expect(error.message).toBe("search answered with a body the plugin can't decode")
+    expect(stub.requests.map((request) => request.encoding)).toEqual(["identity", "identity"])
   })
 
   test("rejects a success that is not SearXNG's JSON", async () => {
