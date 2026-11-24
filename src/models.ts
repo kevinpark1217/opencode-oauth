@@ -1,7 +1,7 @@
 import { type Plugin, Provider } from "@opencode/plugin/effect"
 import { Effect, Option, Queue, Schema, Stream } from "effect"
+import { readBaseURL } from "./baseurl.js"
 import { getJSON } from "./fetch.js"
-import { urlProblem } from "./url.js"
 
 const ModelList = Schema.Struct({ data: Schema.Array(Schema.Unknown) })
 const isModel = Schema.is(Schema.Struct({ id: Schema.NonEmptyString }))
@@ -20,7 +20,7 @@ const contextOf = (model: object) =>
 const listTimeoutMs = 10_000
 
 function listModels(baseURL: string, accessToken: string) {
-  return getJSON(new URL(`${baseURL.replace(/\/+$/, "")}/models`), accessToken, "/models", listTimeoutMs).pipe(
+  return getJSON(new URL(`${baseURL}/models`), accessToken, "/models", listTimeoutMs).pipe(
     Effect.flatMap((body) =>
       Schema.decodeUnknownEffect(ModelList)(body).pipe(Effect.mapError(() => new Error("/models returned no model list"))),
     ),
@@ -47,7 +47,8 @@ export function discoverModels(ctx: Plugin.Context, providerID: string) {
     // chain. A new model starts from OpenCode's model defaults. The config's model entries apply later in the same
     // chain, field by field, so a model the config lists takes the context too unless its entry sets one.
     yield* ctx.model.transform((models) => {
-      if (!found || found.baseURL !== models.provider.get(providerID)?.provider.settings?.baseURL) return
+      const read = readBaseURL(models.provider.get(providerID)?.provider.settings)
+      if (!found || !read || !("url" in read) || found.baseURL !== read.url) return
       for (const { id, context } of found.entries)
         models.update(providerID, id, (model) => {
           if (context) model.limit.context = context
@@ -59,17 +60,18 @@ export function discoverModels(ctx: Plugin.Context, providerID: string) {
       const connection = yield* ctx.integration.connection.active(providerID)
       if (connection?.type !== "credential") return undefined
       const provider = yield* ctx.provider.get({ providerID: Provider.ID.make(providerID) }).pipe(Effect.option)
-      const baseURL = Option.getOrUndefined(provider)?.data.settings?.baseURL
-      return typeof baseURL === "string" ? { connection, baseURL, key: `${connection.id} ${baseURL}` } : undefined
+      const baseURL = readBaseURL(Option.getOrUndefined(provider)?.data.settings)
+      if (!baseURL) return undefined
+      return { connection, baseURL, key: `${connection.id} ${"url" in baseURL ? baseURL.url : baseURL.problem}` }
     })
 
     const list = (to: NonNullable<Effect.Success<typeof target>>) =>
       Effect.gen(function* () {
-        const problem = urlProblem(to.baseURL)
-        if (problem !== undefined) return yield* Effect.fail(new Error(`the provider's baseURL ${problem}`))
+        if ("problem" in to.baseURL) return yield* Effect.fail(new Error(to.baseURL.problem))
+        const baseURL = to.baseURL.url
         const credential = yield* ctx.integration.connection.resolve(to.connection)
         if (credential?.type !== "oauth") return undefined
-        return yield* listModels(to.baseURL, credential.access)
+        return { baseURL, entries: yield* listModels(baseURL, credential.access) }
       })
 
     // Lists once per account and baseURL: at startup, at sign-in or account switch, and when the baseURL changes.
@@ -82,7 +84,7 @@ export function discoverModels(ctx: Plugin.Context, providerID: string) {
         yield* ctx.model.reload()
       }
       if (!to) return
-      const entries = yield* list(to).pipe(
+      const listed = yield* list(to).pipe(
         Effect.catch((error) =>
           Effect.logWarning(`model discovery failed: ${error instanceof Error ? error.message : String(error)}`).pipe(
             Effect.as(undefined),
@@ -90,8 +92,8 @@ export function discoverModels(ctx: Plugin.Context, providerID: string) {
         ),
       )
       // A change while /models answered has its own refresh queued.
-      if (!entries || (yield* target)?.key !== to.key) return
-      found = { key: to.key, baseURL: to.baseURL, entries }
+      if (!listed || (yield* target)?.key !== to.key) return
+      found = { key: to.key, ...listed }
       yield* ctx.model.reload()
     })
 
