@@ -99,12 +99,7 @@ export function discoverModels(ctx: Plugin.Context, providerID: string) {
 
     const refreshes = yield* Queue.unbounded<void>()
     yield* ctx.event.subscribe({ types: ["credential.switched", "provider.updated"] }).pipe(
-      // OpenCode before 2.2 delivers every event, whatever `types` asks for.
-      Stream.filter(
-        (event) =>
-          event.type === "provider.updated" ||
-          (event.type === "credential.switched" && event.data.integrationID === providerID),
-      ),
+      Stream.filter((event) => event.type !== "credential.switched" || event.data.integrationID === providerID),
       Stream.runForEach(() => Queue.offer(refreshes, undefined)),
       Effect.forkScoped({ startImmediately: true }),
     )

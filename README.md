@@ -148,9 +148,6 @@ The SearXNG instance must allow JSON output (`json` in `search.formats` in its
   and closes the listener as soon as the attempt ends. The listener runs in
   OpenCode's server, so sign in where the browser is: an OpenCode server on
   another host (`opencode attach`, SSH) never receives the redirect.
-- **Renewals are shared within one OpenCode server**, which every client on the
-  machine attaches to. A second server (`--standalone`) refreshing at the same
-  moment can spend a refresh token both use, and then both need a new sign-in.
 - **A failed search** reaches the model only as "Unable to search the web for
   …": OpenCode keeps the reason, such as a needed sign-in, out of the tool's
   output.
@@ -166,8 +163,10 @@ The SearXNG instance must allow JSON output (`json` in `search.formats` in its
   authorization response from another issuer is refused (RFC 9207).
 - An authorization response that repeats a parameter the plugin reads ends the
   sign-in (RFC 6749 section 3.1), so a planted value can't hide the real one.
-- Concurrent renewals of one refresh token share a single request, so a server
-  that revokes a reused rotated refresh token does not sign you out.
+- A renewal OpenCode stops waiting for still finishes, and the same OpenCode
+  server's next try takes its result rather than sending the spent refresh
+  token again, so a server that revokes a reused rotated refresh token doesn't
+  sign you out.
 - A JSON response is refused past 4 MiB, counted as it arrives and, if it
   comes compressed, as it decodes, so no server can make OpenCode hold a huge
   body.

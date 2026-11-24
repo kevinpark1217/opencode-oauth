@@ -102,7 +102,7 @@ export function parseOptions(input: unknown): Options {
 
 const toError = (cause: unknown) => (cause instanceof Error ? cause : new Error(String(cause)))
 
-// A hung token endpoint must not hold every model call behind a shared refresh.
+// Ends a hung token request, and with it a renewal OpenCode stopped waiting for.
 const tokenRequestTimeoutMs = 30_000
 
 const base64url = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64url")
@@ -358,11 +358,13 @@ function requestToken(
   })
 }
 
-// OpenCode refreshes without a lock (anomalyco/opencode#50759) and servers may
-// revoke a rotated refresh token's family on reuse, so concurrent refreshes of
-// one token share one request. A rotated result is kept until its access token
-// expires, for callers that read the old credential before OpenCode stored the
-// new one: the old token is spent, so asking again could only fail.
+// OpenCode gives a renewal 30 seconds, but this one can take longer (metadata,
+// then the token request), and one OpenCode stops waiting for still runs: the
+// server may rotate the refresh token after OpenCode has given up. OpenCode's
+// next try carries the same refresh token, so this process keeps renewals keyed
+// by it, and a rotated result until its access token expires: the next try takes
+// that result rather than spending the old token again, which a server may
+// answer by revoking the active refresh token (RFC 9700 section 4.14.2).
 const refreshes = new Map<string, Promise<Credential.OAuth>>()
 
 function refreshToken(options: Options, discover: Discover, current: Credential.OAuth) {
