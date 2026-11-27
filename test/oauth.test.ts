@@ -370,17 +370,28 @@ describe("refresh", () => {
     ])
   })
 
-  test("sends one request for concurrent and later refreshes of the same token", async () => {
-    using tokens = tokenEndpoint([
-      { status: 200, body: { access_token: "new-access", refresh_token: "rotated", expires_in: 900, token_type: "Bearer" } },
-    ])
-    const { credential } = refresher(optionsFor(tokens.url))
-    const [first, second] = await Promise.all([credential(), credential()])
-    const late = await credential()
-    expect(tokens.forms).toHaveLength(1)
-    expect(second).toEqual(first)
-    expect(late).toEqual(first)
-    expect(first.refresh).toBe("rotated")
+  test("keeps a renewal OpenCode stopped waiting for, so its next try doesn't spend the token again", async () => {
+    let requests = 0
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch() {
+        requests++
+        await Bun.sleep(200)
+        return Response.json({ access_token: "new-access", refresh_token: "rotated", expires_in: 900, token_type: "Bearer" })
+      },
+    })
+    try {
+      const { method, current, credential } = refresher(optionsFor(`http://127.0.0.1:${server.port}/token`))
+      // OpenCode gives a renewal 30 seconds; this one, 50 ms.
+      const abandoned = method.refresh?.(current) ?? Effect.die("no refresh")
+      expect((await Effect.runPromiseExit(abandoned.pipe(Effect.timeout("50 millis"))))._tag).toBe("Failure")
+      expect((await credential()).refresh).toBe("rotated")
+      expect((await credential()).refresh).toBe("rotated")
+      expect(requests).toBe(1)
+    } finally {
+      server.stop(true)
+    }
   })
 
   test("asks again when the server did not rotate the refresh token", async () => {
