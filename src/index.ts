@@ -16,7 +16,7 @@ export default Plugin.define({
       })
       // OpenCode reruns transforms whenever its registry is rebuilt; one
       // registration keeps the issuers' metadata across those reruns.
-      const method = registration(options)
+      const method = registration(ctx, options)
       yield* ctx.integration.transform((editor) => {
         editor.method.update(method)
         editor.method.remove(options.provider, { type: "key" })

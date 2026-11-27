@@ -98,10 +98,10 @@ Pinning a version (`opencode-oauth@<version>`) turns update checks off.
 |---|---|---|
 | `provider` | yes | The key of the provider in `providers` that the plugin signs in to. |
 | `clientID` | yes | The client ID registered with the authorization server. |
-| `issuer` | yes, or both endpoints | The authorization server's issuer, such as `https://auth.example.com/realms/example`. The plugin reads the endpoints from the server's metadata (OpenID Connect Discovery or RFC 8414). |
-| `authorizationEndpoint`, `tokenEndpoint` | instead of `issuer` | The endpoints themselves, for a server that publishes no metadata, or whose metadata names a different issuer. |
-| `scope` | no | The scopes to request, space-separated, such as `openid offline_access`. Include what gets you a refresh token. Unset, the plugin requests no scope of its own, which leaves the choice to the server; set, it replaces the server's default. |
-| `resource` | no | The API the access token is for, such as `https://llm.example.com`, for a server that issues tokens per resource (RFC 8707). It is sent with the sign-in and every token request, so sign in again after changing it. |
+| `issuer` | no | The authorization server's issuer, such as `https://auth.example.com/realms/example`. The plugin reads the endpoints from the server's metadata (OpenID Connect Discovery or RFC 8414). Leave it and both endpoints out for the plugin to find the server from the API: see below. |
+| `authorizationEndpoint`, `tokenEndpoint` | no, instead of `issuer` | The endpoints themselves, for a server that publishes no metadata, or whose metadata names a different issuer. |
+| `scope` | no | The scopes to request, space-separated, such as `openid offline_access`. Include what gets you a refresh token. Unset, the plugin requests no scope of its own, which leaves the choice to the server, or the API's scopes when it finds the server from the API; set, it replaces the server's default. |
+| `resource` | no | The API the access token is for, such as `https://llm.example.com`, for a server that issues tokens per resource (RFC 8707). It is sent with the sign-in and every token request, so sign in again after changing it. When the plugin finds the server from the API, it defaults to the `baseURL`. |
 | `port` | no | The loopback redirect's port. Unset or `0` lets the OS pick one. |
 | `authorizationParams` | no | Extra parameters for the authorization request, such as `{ "audience": "https://llm.example.com" }` for a server that picks the access token's audience from one. It cannot set `resource`, or replace the parameters the grant sets itself. |
 | `searchURL` | no | A SearXNG search endpoint that accepts the same access token, such as `https://search.example.com/search`. See below. |
@@ -115,6 +115,55 @@ Plain `http` is accepted for `issuer`, the endpoints and `searchURL` only on
 that follows the same rule. Each of these URLs needs a host, and may not carry
 a user name, password or whitespace; the endpoints may not have a fragment, and
 an `https` issuer's metadata must name `https` endpoints.
+
+### Finding the server from the API
+
+With none of `issuer`, `authorizationEndpoint` and `tokenEndpoint` set, sign-in
+reads the API's protected resource metadata (RFC 9728) for the provider's
+`baseURL`: for `https://llm.example.com/v1`, at
+`https://llm.example.com/.well-known/oauth-protected-resource/v1`. The
+document must name one authorization server, which must advertise RFC 9207
+(`authorization_response_iss_parameter_supported`) and list PKCE with `S256`;
+Keycloak does, many don't yet. The plugin then sends the `baseURL` as
+`resource` and requests the document's `scopes_supported`, plus
+`offline_access` when the identity provider lists it. The plugin's options can
+then be just `provider` and `clientID`.
+
+- **Your first sign-in binds the provider** to that server, and a later sign-in
+  refuses another one. To move to a new server, sign in once with `issuer` set
+  to it, then remove `issuer`; a sign-in with the endpoints set clears the
+  binding, and one whose binding can't be stored leaves it as it was. After
+  pointing the provider at another API, sign in again: renewal keeps using the
+  server and `resource` you signed in with.
+- **When it fails**, the message says what and usually asks you to set `issuer`,
+  as your identity provider's administrator gives it. An API that needs
+  DPoP-bound tokens, or the token outside the `Authorization` header, can't be
+  used. If the server refuses the `resource` (`invalid_target`), set `resource`,
+  or `issuer` if it wants none; if it refuses the scopes (`invalid_scope`), set
+  `scope`. A provider that ignores `offline_access` without consent also needs
+  `authorizationParams` `{ "prompt": "consent" }`.
+- **It trusts the API** to choose where you sign in. On a first sign-in, a
+  compromised API could open a look-alike page, so check the address bar: the
+  desktop app doesn't show the sign-in URL. The plugin contacts the API, the
+  server it names and that server's endpoints, over https (or http on loopback),
+  including ones on your LAN. With the default `resource`, a `searchURL` on
+  another host may refuse the token. Setting `issuer` turns all of this off,
+  with its defaults.
+
+To publish the document, serve it without a token at that path:
+
+```json
+{
+  "resource": "https://llm.example.com/v1",
+  "authorization_servers": ["https://auth.example.com"],
+  "scopes_supported": ["models"]
+}
+```
+
+`resource` must be the `baseURL` without a trailing slash, and
+`scopes_supported` only what clients need: the plugin requests it whole, and
+adds `offline_access` itself. An API served at its host's root, such as
+LiteLLM's, whose root document describes something else, needs `issuer`.
 
 ### Web search through SearXNG
 
@@ -139,11 +188,12 @@ The SearXNG instance must allow JSON output (`json` in `search.formats` in its
 - **Sign in again** when the refresh token lapses or the server revokes it. A
   failed renewal does not open the browser: run `/connect` or
   `opencode auth login <provider>` again.
-- **Renewal goes to the server you signed in with,** for the same `resource`,
-  as the credential records them. Setting or changing `issuer`, `tokenEndpoint`
-  or `resource` makes renewal fail until you sign in again, and a removed
-  `resource` is still sent until then. A credential from an earlier release
-  renews once from whatever the options name at that moment, and records it.
+- **Renewal goes to the server you signed in with,** for the same `resource`, as
+  the credential records them. Setting `issuer`, `tokenEndpoint` or `resource`
+  to something other than what it records makes renewal fail until you sign in
+  again, and a removed `resource` is still sent until then. A credential from an
+  earlier release renews once from whatever the options name at that moment, and
+  records it; if they name no server, sign in again.
 - **During a sign-in only**, the plugin listens on `127.0.0.1` for the redirect,
   and closes the listener as soon as the attempt ends. The listener runs in
   OpenCode's server, so sign in where the browser is: an OpenCode server on
@@ -160,7 +210,10 @@ The SearXNG instance must allow JSON output (`json` in `search.formats` in its
 - The redirect listener accepts only the callback carrying this attempt's
   `state`; anything else on the port is refused without ending the sign-in.
 - With `issuer`, the server's metadata must name that same issuer, and an
-  authorization response from another issuer is refused (RFC 9207).
+  authorization response from another issuer is refused (RFC 9207). Found from
+  the API, the server must send its issuer in every response: one loopback
+  `/callback` serves every server, so the issuer, not the redirect URI, tells
+  them apart (RFC 9700 section 4.4.2).
 - An authorization response that repeats a parameter the plugin reads ends the
   sign-in (RFC 6749 section 3.1), so a planted value can't hide the real one.
 - A renewal OpenCode stops waiting for still finishes, and the same OpenCode

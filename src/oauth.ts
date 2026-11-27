@@ -7,7 +7,8 @@ import { Deferred, Effect, Option, Schema, SchemaTransformation, type Scope } fr
 import { createServer, type ServerResponse } from "node:http"
 import { failedField, quotable, toError } from "./errors.js"
 import { deadline, explain, fetchJSON } from "./fetch.js"
-import { type MetadataCache, metadataCache, type Server } from "./metadata.js"
+import { discover, type PluginContext, storeBinding, type Target } from "./discovery.js"
+import { type MetadataCache, metadataCache } from "./metadata.js"
 import type { Options } from "./options.js"
 import { endpointProblem, issuerProblem, resourceProblem } from "./url.js"
 
@@ -43,15 +44,19 @@ const reply = (response: ServerResponse, status: number, text: string) =>
     })
     .end(text)
 
-type Client = Pick<Options, "clientID" | "resource">
+interface Client {
+  readonly clientID: string
+  readonly resource: string | undefined
+}
 
-function signInServer(options: Options, servers: MetadataCache): Effect.Effect<Server, Error> {
-  const { issuer, authorizationEndpoint, tokenEndpoint } = options
-  if (issuer !== undefined) return servers(issuer)
-  if (authorizationEndpoint === undefined || tokenEndpoint === undefined) {
-    return Effect.fail(new Error("set issuer, or both authorizationEndpoint and tokenEndpoint"))
+// From the options, or with none of the server's options set, from the API.
+function signInTarget(host: PluginContext, options: Options, servers: MetadataCache): Effect.Effect<Target, Error> {
+  const { issuer, authorizationEndpoint, tokenEndpoint, resource, scope } = options
+  if (issuer !== undefined) return servers.get(issuer).pipe(Effect.map((server) => ({ server, resource, scope })))
+  if (authorizationEndpoint !== undefined && tokenEndpoint !== undefined) {
+    return Effect.succeed({ server: { authorizationEndpoint, tokenEndpoint }, resource, scope })
   }
-  return Effect.succeed({ authorizationEndpoint, tokenEndpoint })
+  return discover(host, options, servers)
 }
 
 // Renewal goes only to the server that issued a credential (RFC 6749 section
@@ -65,7 +70,7 @@ const IssuedBy = Schema.Struct({
 })
 type IssuedBy = typeof IssuedBy.Type
 
-const issuedBy = ({ issuer, tokenEndpoint, resource }: Options): IssuedBy => ({
+const issuedBy = ({ issuer, tokenEndpoint, resource }: IssuedBy): IssuedBy => ({
   ...(issuer !== undefined ? { issuer } : { tokenEndpoint }),
   ...(resource !== undefined ? { resource } : {}),
 })
@@ -83,6 +88,9 @@ function serverIn({ issuer, tokenEndpoint, resource }: IssuedBy) {
 function recorded(options: Options, current: Credential.OAuth) {
   return Effect.gen(function* () {
     const stored = current.metadata?.[recordKey]
+    if (stored === undefined && options.issuer === undefined && options.tokenEndpoint === undefined) {
+      return yield* Effect.fail(new Error("the credential has no record of the server that issued it; sign in again"))
+    }
     const issued = stored === undefined ? issuedBy(options) : Option.getOrUndefined(Schema.decodeUnknownOption(IssuedBy)(stored))
     const server = issued && serverIn(issued)
     if (issued === undefined || server === undefined) {
@@ -183,7 +191,7 @@ function refreshToken(options: Options, servers: MetadataCache, current: Credent
       const next = Effect.runPromise(
         Effect.gen(function* () {
           const { server, issued, metadata } = yield* recorded(options, current)
-          const tokenEndpoint = "issuer" in server ? (yield* servers(server.issuer)).tokenEndpoint : server.tokenEndpoint
+          const tokenEndpoint = "issuer" in server ? (yield* servers.get(server.issuer)).tokenEndpoint : server.tokenEndpoint
           return yield* requestToken(
             { clientID: options.clientID, resource: issued.resource },
             tokenEndpoint,
@@ -207,7 +215,11 @@ function refreshToken(options: Options, servers: MetadataCache, current: Credent
   })
 }
 
-function authorize(options: Options, authServer: Server): Effect.Effect<IntegrationOAuthAuthorization, Error, Scope.Scope> {
+function authorize(
+  host: PluginContext,
+  options: Options,
+  { server: authServer, resource, scope }: Target,
+): Effect.Effect<IntegrationOAuthAuthorization, Error, Scope.Scope> {
   return Effect.gen(function* () {
     const verifier = randomToken()
     const digest = yield* Effect.promise(() => crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)))
@@ -244,6 +256,10 @@ function authorize(options: Options, authServer: Server): Effect.Effect<Integrat
       if (repeated !== undefined) return end(`Authorization response repeats ${repeated}`)
       // Mix-up defense (RFC 9207 section 2.4): a response naming another issuer
       // is refused, and so is one without an issuer from a server that sends it.
+      // One loopback /callback serves every server, so the issuer, not the
+      // redirect URI, tells servers apart: a deviation from RFC 8252 section 8.10.
+      // RFC 9700 section 4.4.2.1 makes the issuer the mix-up defense, and section
+      // 4.4.2.2 keeps distinct redirect URIs for when no other is available.
       const iss = url.searchParams.get("iss")
       if (expected !== undefined && (iss === null ? expected.inResponse : iss !== expected.id)) {
         return end(iss === null ? "Authorization response has no issuer" : "Authorization response came from another issuer")
@@ -288,14 +304,14 @@ function authorize(options: Options, authServer: Server): Effect.Effect<Integrat
       response_type: "code",
       client_id: options.clientID,
       redirect_uri: redirect,
-      ...(options.scope !== undefined ? { scope: options.scope } : {}),
+      ...(scope !== undefined ? { scope } : {}),
       state,
       code_challenge: base64url(new Uint8Array(digest)),
       code_challenge_method: "S256",
     })) {
       url.searchParams.set(key, value)
     }
-    if (options.resource !== undefined) url.searchParams.set("resource", options.resource)
+    if (resource !== undefined) url.searchParams.set("resource", resource)
 
     return {
       mode: "auto",
@@ -303,12 +319,15 @@ function authorize(options: Options, authServer: Server): Effect.Effect<Integrat
       instructions: "Finish signing in in your browser.",
       callback: Effect.gen(function* () {
         const { code, response } = yield* Deferred.await(received)
+        const issuer = authServer.issuer?.id
         return yield* requestToken(
-          options,
+          { clientID: options.clientID, resource },
           authServer.tokenEndpoint,
           { grant_type: "authorization_code", code, redirect_uri: redirect, code_verifier: verifier },
-          { [recordKey]: issuedBy(options) },
+          { [recordKey]: issuedBy({ issuer, tokenEndpoint: authServer.tokenEndpoint, resource }) },
         ).pipe(
+          // The provider is bound to the issuer it signed in with, or to none.
+          Effect.tap(() => storeBinding(host, options.provider, issuer)),
           Effect.tap(() => Effect.sync(() => reply(response, 200, "Signed in. You can close this tab."))),
           Effect.tapError((error) => Effect.sync(() => reply(response, 400, error.message))),
           Effect.onInterrupt(() => Effect.sync(() => response.destroy())),
@@ -318,12 +337,12 @@ function authorize(options: Options, authServer: Server): Effect.Effect<Integrat
   })
 }
 
-export function registration(options: Options): IntegrationOAuthMethodRegistration {
+export function registration(host: PluginContext, options: Options): IntegrationOAuthMethodRegistration {
   const servers = metadataCache()
   return {
     integrationID: options.provider,
     method: { id: methodID, type: "oauth", label: "Sign in" },
-    authorize: () => signInServer(options, servers).pipe(Effect.flatMap((authServer) => authorize(options, authServer))),
+    authorize: () => signInTarget(host, options, servers).pipe(Effect.flatMap((target) => authorize(host, options, target))),
     refresh: (current) => refreshToken(options, servers, current),
   }
 }

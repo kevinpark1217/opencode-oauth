@@ -16,8 +16,8 @@ export function urlProblem(value: string, namedBy?: string): string | undefined 
 }
 
 // RFC 8414 section 2.
-export function issuerProblem(value: string): string | undefined {
-  return urlProblem(value) ?? (/[?#]/.test(value) ? "cannot have a query or fragment" : undefined)
+export function issuerProblem(value: string, namedBy?: string): string | undefined {
+  return urlProblem(value, namedBy) ?? (/[?#]/.test(value) ? "cannot have a query or fragment" : undefined)
 }
 
 // RFC 6749 sections 3.1 and 3.2.
