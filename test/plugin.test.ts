@@ -7,7 +7,7 @@ import { Effect, Queue, Stream } from "effect"
 import { readBaseURL } from "../src/baseurl.js"
 import { checkHost, minimumOpenCode } from "../src/host.js"
 import plugin from "../src/index.js"
-import type { Options } from "../src/oauth.js"
+import type { Options } from "../src/options.js"
 
 const options: Options = {
   provider: "example",

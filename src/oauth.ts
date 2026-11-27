@@ -3,26 +3,13 @@ import type {
   IntegrationOAuthAuthorization,
   IntegrationOAuthMethodRegistration,
 } from "@opencode/plugin/effect/integration"
-import { Deferred, Effect, Option, Schema, type SchemaIssue, SchemaTransformation, type Scope } from "effect"
+import { Deferred, Effect, Option, Schema, SchemaTransformation, type Scope } from "effect"
 import { createServer, type ServerResponse } from "node:http"
-import { deadline, explain, type Failure, fetchJSON } from "./fetch.js"
-import { endpointProblem, issuerProblem, resourceProblem, urlProblem } from "./url.js"
-
-const OptionsSchema = Schema.Struct({
-  provider: Schema.NonEmptyString,
-  clientID: Schema.NonEmptyString,
-  issuer: Schema.optional(Schema.NonEmptyString),
-  authorizationEndpoint: Schema.optional(Schema.NonEmptyString),
-  tokenEndpoint: Schema.optional(Schema.NonEmptyString),
-  // OpenCode turns an unset {env:…} into an empty string, which stays an error.
-  scope: Schema.optional(Schema.NonEmptyString),
-  resource: Schema.optional(Schema.NonEmptyString),
-  port: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 65535 }))),
-  authorizationParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-  searchURL: Schema.optional(Schema.NonEmptyString),
-  discoverModels: Schema.optional(Schema.Boolean),
-})
-export type Options = typeof OptionsSchema.Type
+import { failedField, quotable, toError } from "./errors.js"
+import { deadline, explain, fetchJSON } from "./fetch.js"
+import { type MetadataCache, metadataCache, type Server } from "./metadata.js"
+import type { Options } from "./options.js"
+import { endpointProblem, issuerProblem, resourceProblem } from "./url.js"
 
 // expires_in is digits (RFC 6749 appendix A.14); some servers send them as a
 // JSON string.
@@ -39,69 +26,8 @@ const TokenResponse = Schema.Struct({
   refresh_token: Schema.optional(Schema.NullOr(Schema.NonEmptyString)),
 })
 
-// Authorization server metadata (RFC 8414 section 2, OpenID Connect Discovery
-// section 3), with what this client needs of it.
-const Metadata = Schema.Struct({
-  issuer: Schema.NonEmptyString,
-  authorization_endpoint: Schema.NonEmptyString,
-  token_endpoint: Schema.NonEmptyString,
-  code_challenge_methods_supported: Schema.optional(Schema.Array(Schema.String)),
-  authorization_response_iss_parameter_supported: Schema.optional(Schema.Boolean),
-})
-
-// Returns only the schema's own field names, never text from the response.
-function failedField(issue: SchemaIssue.Issue, fields: ReadonlyArray<string>): string | undefined {
-  switch (issue._tag) {
-    case "Pointer": {
-      const [field] = issue.path
-      return typeof field === "string" && fields.includes(field) ? field : undefined
-    }
-    case "Composite":
-      return issue.issues.map((inner) => failedField(inner, fields)).find((field) => field !== undefined)
-    default:
-      return undefined
-  }
-}
-
 const methodID = Integration.MethodID.make("oauth")
 const callbackPath = "/callback"
-const reservedParams = [
-  "response_type",
-  "client_id",
-  "redirect_uri",
-  "scope",
-  "state",
-  "code_challenge",
-  "code_challenge_method",
-]
-
-export function parseOptions(input: unknown): Options {
-  const options = Schema.decodeUnknownSync(OptionsSchema, { onExcessProperty: "error" })(input)
-  const check = (name: string, value: string | undefined, problemOf: (value: string) => string | undefined) => {
-    const problem = value === undefined ? undefined : problemOf(value)
-    if (problem !== undefined) throw new Error(`${name} ${problem}`)
-  }
-  check("issuer", options.issuer, issuerProblem)
-  check("authorizationEndpoint", options.authorizationEndpoint, endpointProblem)
-  check("tokenEndpoint", options.tokenEndpoint, endpointProblem)
-  check("searchURL", options.searchURL, urlProblem)
-  if (options.issuer !== undefined) {
-    if (options.authorizationEndpoint !== undefined || options.tokenEndpoint !== undefined) {
-      throw new Error("set issuer, or authorizationEndpoint and tokenEndpoint, not both")
-    }
-  } else if (options.authorizationEndpoint === undefined || options.tokenEndpoint === undefined) {
-    throw new Error("set issuer, or both authorizationEndpoint and tokenEndpoint")
-  }
-  check("resource", options.resource, resourceProblem)
-  for (const key of Object.keys(options.authorizationParams ?? {})) {
-    if (key === "resource") throw new Error("set resource as an option of its own, not in authorizationParams")
-    if (reservedParams.includes(key)) throw new Error(`authorizationParams cannot set ${key}`)
-  }
-  return options
-}
-
-const toError = (cause: unknown) => (cause instanceof Error ? cause : new Error(String(cause)))
-
 // Ends a hung token request, and with it a renewal OpenCode stopped waiting for.
 const tokenRequestTimeoutMs = 30_000
 
@@ -117,129 +43,11 @@ const reply = (response: ServerResponse, status: number, text: string) =>
     })
     .end(text)
 
-// Server text reaches an error message only when it is short and fits OAuth's
-// error grammar: printable ASCII without `"` or `\` (RFC 6749 appendix A.7, A.8).
-const quotable = (value: unknown, max = 64): value is string =>
-  typeof value === "string" && value.length <= max && /^[\x20-\x21\x23-\x5B\x5D-\x7E]+$/.test(value)
-
 type Client = Pick<Options, "clientID" | "resource">
 
-interface Server {
-  readonly authorizationEndpoint: string
-  readonly tokenEndpoint: string
-  // Known only from discovery; then authorization responses are checked against it.
-  readonly issuer?: { readonly id: string; readonly inResponse: boolean }
-}
-
-const discoveryTimeoutMs = 10_000
-
-// OpenID Connect Discovery appends the well-known path to the issuer; RFC 8414
-// inserts it between the host and the issuer's path.
-function metadataLocations(issuer: string) {
-  const url = new URL(issuer)
-  const path = url.pathname.replace(/\/$/, "")
-  return [`${url.origin}${path}/.well-known/openid-configuration`, `${url.origin}/.well-known/oauth-authorization-server${path}`]
-}
-
-type LookupFailure =
-  | { readonly reason: "fetch"; readonly location: string; readonly failure: Failure }
-  | { readonly reason: "none" }
-  | { readonly reason: "invalid"; readonly location: string; readonly field: string | undefined }
-  | { readonly reason: "another issuer"; readonly named: string }
-
-function lookup(issuer: string): Effect.Effect<{ location: string; metadata: typeof Metadata.Type }, LookupFailure> {
-  return Effect.gen(function* () {
-    const within = deadline(discoveryTimeoutMs)
-    for (const location of metadataLocations(issuer)) {
-      const body = yield* fetchJSON(location, { headers: { Accept: "application/json" } }, within).pipe(
-        Effect.catchIf((failure) => failure.reason === "status" && failure.status === 404, () => Effect.succeed(undefined)),
-        Effect.mapError((failure): LookupFailure => ({ reason: "fetch", location, failure })),
-      )
-      if (body === undefined) continue
-      const metadata = yield* Schema.decodeUnknownEffect(Metadata)(body).pipe(
-        Effect.mapError(
-          (error): LookupFailure => ({ reason: "invalid", location, field: failedField(error.issue, Object.keys(Metadata.fields)) }),
-        ),
-      )
-      // RFC 8414 section 3.3, OpenID Connect Discovery section 4.3.
-      if (metadata.issuer !== issuer) return yield* Effect.fail<LookupFailure>({ reason: "another issuer", named: metadata.issuer })
-      return { location, metadata }
-    }
-    return yield* Effect.fail<LookupFailure>({ reason: "none" })
-  })
-}
-
-// A configured issuer is the user's own, so its location and value are named.
-function lookupError(issuer: string, failure: LookupFailure): Error {
-  switch (failure.reason) {
-    case "fetch":
-      // The budget spans both locations, so a timeout belongs to the issuer.
-      return new Error(
-        `authorization server metadata ${failure.failure.reason === "timeout" ? `for ${issuer}` : `at ${failure.location}`} ` +
-          explain(failure.failure),
-      )
-    case "none":
-      return new Error(`no authorization server metadata for ${issuer}`)
-    case "invalid":
-      return new Error(
-        failure.field === undefined
-          ? `${failure.location} returned no authorization server metadata`
-          : `authorization server metadata has no valid ${failure.field}`,
-      )
-    case "another issuer": {
-      const named = quotable(failure.named, 256) ? `"${failure.named}"` : "a different issuer"
-      return new Error(`authorization server metadata names ${named}, not "${issuer}"`)
-    }
-  }
-}
-
-function discover(issuer: string) {
-  return Effect.gen(function* () {
-    const { location, metadata } = yield* lookup(issuer).pipe(Effect.mapError((failure) => lookupError(issuer, failure)))
-    for (const [name, value] of [
-      ["authorization_endpoint", metadata.authorization_endpoint],
-      ["token_endpoint", metadata.token_endpoint],
-    ] as const) {
-      const problem = endpointProblem(value, location)
-      if (problem !== undefined) return yield* Effect.fail(new Error(`authorization server metadata's ${name} ${problem}`))
-    }
-    const methods = metadata.code_challenge_methods_supported
-    if (methods !== undefined && !methods.includes("S256")) {
-      return yield* Effect.fail(new Error("authorization server does not support PKCE with S256"))
-    }
-    return {
-      authorizationEndpoint: metadata.authorization_endpoint,
-      tokenEndpoint: metadata.token_endpoint,
-      issuer: { id: issuer, inResponse: metadata.authorization_response_iss_parameter_supported === true },
-    } satisfies Server
-  })
-}
-
-type Discover = (issuer: string) => Effect.Effect<Server, Error>
-
-// Metadata is fetched when first needed, not at startup, and kept per issuer once
-// it is valid; a failure is retried on the next attempt.
-function discoverer(): Discover {
-  const pending = new Map<string, Promise<Server>>()
-  return (issuer) =>
-    Effect.tryPromise({
-      try: () => {
-        const known = pending.get(issuer)
-        if (known !== undefined) return known
-        const found = Effect.runPromise(discover(issuer)).catch((error: unknown) => {
-          pending.delete(issuer)
-          throw error
-        })
-        pending.set(issuer, found)
-        return found
-      },
-      catch: toError,
-    })
-}
-
-function signInServer(options: Options, discover: Discover): Effect.Effect<Server, Error> {
+function signInServer(options: Options, servers: MetadataCache): Effect.Effect<Server, Error> {
   const { issuer, authorizationEndpoint, tokenEndpoint } = options
-  if (issuer !== undefined) return discover(issuer)
+  if (issuer !== undefined) return servers(issuer)
   if (authorizationEndpoint === undefined || tokenEndpoint === undefined) {
     return Effect.fail(new Error("set issuer, or both authorizationEndpoint and tokenEndpoint"))
   }
@@ -367,7 +175,7 @@ function requestToken(
 // answer by revoking the active refresh token (RFC 9700 section 4.14.2).
 const refreshes = new Map<string, Promise<Credential.OAuth>>()
 
-function refreshToken(options: Options, discover: Discover, current: Credential.OAuth) {
+function refreshToken(options: Options, servers: MetadataCache, current: Credential.OAuth) {
   return Effect.tryPromise({
     try: () => {
       const pending = refreshes.get(current.refresh)
@@ -375,7 +183,7 @@ function refreshToken(options: Options, discover: Discover, current: Credential.
       const next = Effect.runPromise(
         Effect.gen(function* () {
           const { server, issued, metadata } = yield* recorded(options, current)
-          const tokenEndpoint = "issuer" in server ? (yield* discover(server.issuer)).tokenEndpoint : server.tokenEndpoint
+          const tokenEndpoint = "issuer" in server ? (yield* servers(server.issuer)).tokenEndpoint : server.tokenEndpoint
           return yield* requestToken(
             { clientID: options.clientID, resource: issued.resource },
             tokenEndpoint,
@@ -511,11 +319,11 @@ function authorize(options: Options, authServer: Server): Effect.Effect<Integrat
 }
 
 export function registration(options: Options): IntegrationOAuthMethodRegistration {
-  const discover = discoverer()
+  const servers = metadataCache()
   return {
     integrationID: options.provider,
     method: { id: methodID, type: "oauth", label: "Sign in" },
-    authorize: () => signInServer(options, discover).pipe(Effect.flatMap((authServer) => authorize(options, authServer))),
-    refresh: (current) => refreshToken(options, discover, current),
+    authorize: () => signInServer(options, servers).pipe(Effect.flatMap((authServer) => authorize(options, authServer))),
+    refresh: (current) => refreshToken(options, servers, current),
   }
 }
